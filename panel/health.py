@@ -241,6 +241,14 @@ class HealthPoller:
             id=svc.id, state=worst.state, checked_at=time.time(),
             detail=[f"{online}/{len(members)} online"],
         )
+        # gộp thứ còn thiếu của member, nếu không card composite báo NO_ENV
+        # mà không nói thiếu gì
+        seen: list[str] = []
+        for m in members:
+            for x in m.missing:
+                if x not in seen:
+                    seen.append(x)
+        st.missing = seen
         pub = next((m.public_url for m in members if m.public_url), None)
         st.public_url = pub
         return st
