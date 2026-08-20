@@ -137,6 +137,26 @@ services:
         - "{json.backend}"
         - "embed={json.embed_loaded}"
         - "chat={json.chat_loaded}"
+    actions:
+      # Không script nào trong intent-service tạo .venv-cpu-inf — bù ở đây
+      - id: bootstrap
+        label: Dựng venv
+        type: script
+        script: "{panel}/scripts/bootstrap_cpu_inf.sh"
+        confirm: "Tạo .venv-cpu-inf và cài torch CPU + llama-cpp + sentence-transformers?<br>Mất khoảng 5-15 phút tuỳ mạng."
+        show_output: modal
+      - id: models
+        label: Tải model
+        type: shell
+        cwd: "{root}"
+        shell: |
+          set -e
+          echo "== embed 0.6B =="
+          bash scripts/download_models.sh -Profile hybrid_speech_asr
+          echo "== chat GGUF =="
+          .venv-cpu-inf/bin/python scripts/download_chat_gguf.py
+        confirm: "Tải model embed 0.6B + chat GGUF (~2GB)?<br>Cần đã `hf auth login` trước."
+        show_output: modal
 
   - id: gpu_chat
     name: GPU Chat (legacy)

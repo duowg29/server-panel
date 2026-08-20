@@ -350,6 +350,7 @@ def load(path: str | Path) -> Config:
         "root": os.path.expanduser(str(defaults.get("root", ""))),
         "log_dir": os.path.expanduser(str(defaults.get("log_dir", "/tmp/tinytalk-hybrid"))),
         "home": os.path.expanduser("~"),
+        "panel": str(Path(__file__).resolve().parent.parent),
     }
     defaults["root"] = vars_["root"]
     defaults["log_dir"] = vars_["log_dir"]
