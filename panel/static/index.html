@@ -1,0 +1,95 @@
+<!doctype html>
+<html lang="vi">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<title>TinyTalk // Server Panel</title>
+<link rel="stylesheet" href="/static/panel.css">
+<link rel="icon" href="data:image/svg+xml,<svg xmlns='http://www.w3.org/2000/svg' viewBox='0 0 16 16'><text y='13' font-size='13'>🖥</text></svg>">
+</head>
+<body>
+
+<div class="topbar">
+  <span class="brand">■ TINYTALK</span>
+  <span class="sep">·</span>
+  <span>LOCAL BOOK</span>
+  <span class="spacer"></span>
+  <span id="conn">○ connecting</span>
+</div>
+
+<div class="masthead">
+  <h1>SERVER_PANEL</h1>
+  <span class="tag">127.0.0.1:9199 · shell as current user · not for public bind</span>
+  <div class="actions">
+    <button id="btn-reload">Reload config</button>
+    <button id="btn-closeall">Đóng hết log</button>
+  </div>
+</div>
+
+<div class="statusstrip" id="strip"></div>
+
+<main class="shell">
+  <div class="col-left">
+    <div id="groups"></div>
+
+    <section class="sec">
+      <h2>Telemetry<span class="close-bracket"></span></h2>
+      <div class="telemetry">
+        <div class="tile">
+          <h3>VRAM</h3>
+          <div id="vram"></div>
+        </div>
+        <div class="tile">
+          <h3>WAV đã xử lí</h3>
+          <div class="big-num" id="wav-total">0</div>
+          <div class="sub" id="wav-sub">—</div>
+        </div>
+        <div class="tile wide">
+          <h3>Requests / min</h3>
+          <div id="chart-req"></div>
+        </div>
+        <div class="tile wide">
+          <h3>Req by service</h3>
+          <div id="chart-bars"></div>
+        </div>
+        <div class="telefoot">
+          <span id="tele-foot">—</span>
+          <span class="spacer" style="flex:1"></span>
+          <button data-win="15" class="win">15s</button>
+          <button data-win="60" class="win on">60s</button>
+          <button data-win="300" class="win">5m</button>
+        </div>
+      </div>
+    </section>
+  </div>
+
+  <aside class="col-right">
+    <div class="logstack" id="logstack">
+      <div class="logempty" id="logempty">
+        Bấm <b style="color:var(--cyan)">&nbsp;LOGS&nbsp;</b> trên một card để mở log ở đây.<br>
+        Mở được nhiều log cùng lúc — khung này bám theo khi bạn cuộn.
+      </div>
+    </div>
+  </aside>
+</main>
+
+<div id="toasts"></div>
+
+<!-- glow filter dùng chung cho mọi chart -->
+<svg width="0" height="0" style="position:absolute">
+  <defs>
+    <filter id="glow" x="-20%" y="-40%" width="140%" height="180%">
+      <feGaussianBlur stdDeviation="1.6" result="b"/>
+      <feMerge><feMergeNode in="b"/><feMergeNode in="SourceGraphic"/></feMerge>
+    </filter>
+    <linearGradient id="areaFill" x1="0" y1="0" x2="0" y2="1">
+      <stop offset="0%" stop-color="#00e5ff" stop-opacity=".45"/>
+      <stop offset="100%" stop-color="#00e5ff" stop-opacity="0"/>
+    </linearGradient>
+  </defs>
+</svg>
+
+<script src="/static/charts.js"></script>
+<script src="/static/app.js"></script>
+</body>
+</html>

@@ -1,0 +1,115 @@
+<!doctype html>
+<html lang="vi">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<title>log</title>
+<link rel="stylesheet" href="/static/panel.css">
+</head>
+<body style="height:100vh;overflow:hidden">
+<div class="logpane" style="height:100vh;border:0;border-radius:0">
+  <div class="logpane__head">
+    <span class="logpane__title" id="title">log</span>
+    <span class="grow"></span>
+    <button id="pause" title="Tạm dừng">⏸</button>
+    <button id="grep" title="Lọc">⌕</button>
+    <button id="follow" class="on" title="Bám đáy">⤓</button>
+    <button id="clear" title="Xoá màn hình">⌫</button>
+  </div>
+  <div class="logpane__tools" id="tools"><input id="q" placeholder="regex lọc dòng…"></div>
+  <div class="logpane__body" id="body"></div>
+</div>
+
+<script>
+const P = new URLSearchParams(location.search);
+const KEY = P.get('log') || '';
+const $ = s => document.querySelector(s);
+document.title = KEY + ' · log';
+$('#title').textContent = KEY + '.log';
+
+let buffer = [], grep = null, follow = true, paused = false;
+
+function cls(l) {
+  if (/^---\s*panel|^===\s*\[server-panel\]/.test(l)) return 'l-panel';
+  if (/ERROR|Traceback|CRITICAL|Exception/i.test(l)) return 'l-err';
+  if (/WARN/i.test(l)) return 'l-warn';
+  if (/"\s*(GET|POST|PUT|DELETE)[^"]*"\s+[45]\d\d/.test(l)) return 'l-err';
+  if (/"\s*(GET|POST|PUT|DELETE)[^"]*"\s+[23]\d\d/.test(l)) return 'l-req';
+  if (/READY|healthy|✔|OK\b/.test(l)) return 'l-ok';
+  return '';
+}
+function row(l) {
+  const d = document.createElement('div');
+  d.className = 'l ' + cls(l);
+  d.textContent = l;
+  return d;
+}
+function bottom() { const b = $('#body'); b.scrollTop = b.scrollHeight; }
+function redraw() {
+  const b = $('#body');
+  b.textContent = '';
+  const f = document.createDocumentFragment();
+  for (const l of buffer) { if (!grep || grep.test(l)) f.appendChild(row(l)); }
+  b.appendChild(f);
+  if (follow) bottom();
+}
+function push(l) {
+  if (paused) return;
+  buffer.push(l);
+  if (buffer.length > 5000) buffer.splice(0, buffer.length - 5000);
+  if (grep && !grep.test(l)) return;
+  const b = $('#body');
+  b.appendChild(row(l));
+  while (b.childElementCount > 5000) b.removeChild(b.firstChild);
+  if (follow) bottom();
+}
+
+$('#pause').onclick = e => {
+  paused = !paused;
+  e.target.classList.toggle('on', paused);
+  e.target.textContent = paused ? '▶' : '⏸';
+};
+$('#follow').onclick = e => {
+  follow = !follow;
+  e.target.classList.toggle('on', follow);
+  if (follow) bottom();
+};
+$('#grep').onclick = () => {
+  $('#tools').classList.toggle('show');
+  if ($('#tools').classList.contains('show')) $('#q').focus();
+  else { $('#q').value = ''; grep = null; redraw(); }
+};
+$('#q').oninput = e => {
+  try { grep = e.target.value ? new RegExp(e.target.value, 'i') : null; e.target.style.borderColor = ''; }
+  catch { e.target.style.borderColor = 'var(--red)'; return; }
+  redraw();
+};
+$('#clear').onclick = () => { buffer = []; redraw(); };
+$('#body').onscroll = () => {
+  const b = $('#body');
+  if (b.scrollHeight - b.scrollTop - b.clientHeight >= 40 && follow) {
+    follow = false; $('#follow').classList.remove('on');
+  }
+};
+
+fetch(`/api/services/${encodeURIComponent(KEY)}/log?lines=800`)
+  .then(r => r.json())
+  .then(d => { buffer = d.lines || []; redraw(); })
+  .catch(() => {});
+
+function connect() {
+  const ws = new WebSocket(`ws://${location.host}/ws/logs/${encodeURIComponent(KEY)}`);
+  ws.onmessage = ev => {
+    const d = JSON.parse(ev.data);
+    if (d.type === 'line') push(d.text);
+    else if (d.type === 'error') push('[panel] ' + d.text);
+  };
+  ws.onclose = () => {
+    push('--- panel: mất kết nối, thử lại sau 3s ---');
+    setTimeout(connect, 3000);
+  };
+}
+connect();
+</script>
+</body>
+</html>

@@ -1,0 +1,411 @@
+# TinyTalk Server Panel — khai báo service.
+#
+# Thêm server mới = thêm một mục vào `services:` rồi bấm RELOAD trên UI.
+# Không phải sửa code.
+#
+# Biến thay thế được: {root}, {log_dir}, {home}
+#
+# LƯU Ý: file này là trusted input — panel chạy đúng những gì viết ở đây.
+# Đừng dán lệnh từ nguồn không tin cậy vào.
+
+version: 1
+
+defaults:
+  root: /home/nguyenhaiduong/Duong/Dev/tinytalk-intent-service
+  log_dir: /tmp/tinytalk-hybrid # ĐÚNG contract HYBRID_LOG_DIR của start_hybrid.sh
+  health_interval_s: 3
+  health_timeout_s: 2
+
+groups:
+  - { id: composite, label: ONE_CLICK }
+  - { id: hybrid, label: HYBRID_STACK }
+  - { id: vllm, label: VLLM_STACK }
+  - { id: edge, label: EDGE }
+
+services:
+  # ══ ONE_CLICK ═══════════════════════════════════════════════════════
+  - id: hybrid_all_ngrok
+    name: HYBRID ALL + NGROK
+    group: composite
+    kind: composite
+    emphasis: primary
+    note: Speech + OTG + gateway + ngrok. Một nút chạy hết.
+    members: [speech, cpu_inf, intent, gateway, ngrok]
+    conflicts_with: [vllm_embed, vllm_chat, asr]
+    start:
+      mode: script
+      script: "{root}/deploy/scripts/start_hybrid_with_ngrok.sh"
+      job_log: "{log_dir}/_job_hybrid_ngrok.log"
+      timeout_s: 1200
+    stop:
+      mode: script
+      script: "{root}/deploy/scripts/stop_hybrid.sh"
+    actions:
+      - id: urls
+        label: Show Flutter .env
+        type: script
+        script: "{root}/deploy/scripts/print_hybrid_ngrok_urls.sh"
+        show_output: modal
+
+  - id: hybrid_all
+    name: Hybrid All (no ngrok)
+    group: composite
+    kind: composite
+    note: 4 service host, không mở tunnel.
+    members: [speech, cpu_inf, intent, gateway]
+    conflicts_with: [vllm_embed, vllm_chat, asr]
+    start:
+      mode: script
+      script: "{root}/deploy/scripts/start_hybrid.sh"
+      job_log: "{log_dir}/_job_hybrid.log"
+      timeout_s: 900
+    stop:
+      mode: script
+      script: "{root}/deploy/scripts/stop_hybrid.sh"
+
+  # ══ HYBRID_STACK ════════════════════════════════════════════════════
+  - id: speech
+    name: TinySpeech
+    group: hybrid
+    kind: process
+    port: 8000
+    log: "{log_dir}/speech.log"
+    pid_file: "{log_dir}/speech.pid"
+    start:
+      mode: process
+      cwd: "{root}"
+      # shell chứ không argv: cần `source` env file
+      shell: |
+        set -a; source speech_service/env.gpu.example; set +a
+        exec python3 speech_service_local.py
+      env:
+        HOST: 0.0.0.0
+        PORT: "8000"
+      requires_file: "{root}/speech_service_local.py"
+    stop:
+      mode: pkill
+      pattern: speech_service_local.py
+      grace_s: 5
+    health:
+      url: http://127.0.0.1:8000/health
+      rules:
+        online: json.status == 'healthy' and json.warm == true
+        starting: json.status == 'starting'
+        degraded: json.status == 'degraded'
+      detail:
+        - "{json.device}"
+        - "{json.model}"
+        - "{json.cuda_memory.allocated_gb} GB"
+    log_metrics:
+      wav_paths:
+        - /transcribe
+        - /api/speech/transcribe
+        - /api/speech/assess
+        - /api/speech/align
+        - /api/speech/recognize
+    actions:
+      - { id: docs, label: API Docs, type: url, url: "http://127.0.0.1:8000/docs" }
+
+  - id: cpu_inf
+    name: Embed + CPU Chat
+    group: hybrid
+    kind: process
+    port: 8001
+    log: "{log_dir}/cpu_inf.log"
+    pid_file: "{log_dir}/cpu_inf.pid"
+    start:
+      mode: process
+      cwd: "{root}"
+      argv: [".venv-cpu-inf/bin/python", "-m", "cpu_inference.server"]
+      env:
+        CUDA_VISIBLE_DEVICES: ""
+        CPU_INF_PORT: "8001"
+        CPU_LOAD_CHAT: "1"
+        CPU_CHAT_N_THREADS: "28"
+        CPU_CHAT_N_CTX: "1024"
+      requires_file: "{root}/.venv-cpu-inf/bin/python"
+    stop:
+      mode: pkill
+      pattern: cpu_inference.server
+      grace_s: 5
+    health:
+      url: http://127.0.0.1:8001/health
+      rules:
+        online: json.status == 'ok' and json.embed_loaded and json.chat_loaded
+        degraded: json.status == 'ok'
+      detail:
+        - "{json.backend}"
+        - "embed={json.embed_loaded}"
+        - "chat={json.chat_loaded}"
+
+  - id: gpu_chat
+    name: GPU Chat (legacy)
+    group: hybrid
+    kind: process
+    port: 8002
+    log: "{log_dir}/gpu_chat.log"
+    pid_file: "{log_dir}/gpu_chat.pid"
+    warn_on_start: Chiếm VRAM của Speech — hybrid mặc định dùng CPU chat :8001
+    start:
+      mode: process
+      cwd: "{root}"
+      argv: [".venv-cpu-inf/bin/python", "-m", "cpu_inference.gpu_chat_server"]
+      env:
+        CUDA_VISIBLE_DEVICES: "0"
+        GPU_CHAT_PORT: "8002"
+        GPU_CHAT_MEM_FRACTION: "0.22"
+      requires_file: "{root}/.venv-cpu-inf/bin/python"
+    stop:
+      mode: pkill
+      pattern: cpu_inference.gpu_chat_server
+      grace_s: 5
+    health:
+      url: http://127.0.0.1:8002/health
+      rules:
+        online: json.status == 'ok' and json.chat_loaded
+        degraded: json.status == 'ok'
+      detail:
+        - "{json.model_id}"
+        - "{json.cuda_memory.allocated_gb} GB"
+
+  - id: intent
+    name: Intent API
+    group: hybrid
+    kind: process
+    port: 8088
+    log: "{log_dir}/intent.log"
+    pid_file: "{log_dir}/intent.pid"
+    start:
+      mode: process
+      cwd: "{root}"
+      argv:
+        - .venv-tinytalk/bin/python
+        - -m
+        - uvicorn
+        - app.main:app
+        - --host
+        - 0.0.0.0
+        - --port
+        - "8088"
+      requires_file: "{root}/.venv-tinytalk/bin/python"
+    stop:
+      mode: pkill
+      # full string: khớp đúng cmdline này, không đụng panel trên :9199
+      pattern: uvicorn app.main:app --host 0.0.0.0 --port 8088
+      grace_s: 5
+    health:
+      url: http://127.0.0.1:8088/health
+      rules:
+        online: json.status == 'ok' and json.cache.ready
+        degraded: json.status == 'ok' or json.status == 'degraded'
+      detail:
+        - "intents={json.cache.enabled_intent_count}"
+        - "embed={json.embed.latency_ms}ms"
+        - "db={json.db.status}"
+    actions:
+      - id: reindex
+        label: Reindex + Restart
+        type: script
+        script: "{root}/deploy/scripts/reindex_and_restart_intent.sh"
+        confirm: Reindex embeddings rồi restart Intent API? Mất vài phút.
+        show_output: modal
+
+  - id: gateway
+    name: Hybrid Gateway
+    group: hybrid
+    kind: process
+    port: 8090
+    log: "{log_dir}/gateway.log"
+    pid_file: "{log_dir}/gateway.pid"
+    start:
+      mode: process
+      cwd: "{root}"
+      argv: [".venv-tinytalk/bin/python", "-m", "cpu_inference.hybrid_gateway"]
+      env:
+        GATEWAY_PORT: "8090"
+        GATEWAY_SPEECH_URL: http://127.0.0.1:8000
+        GATEWAY_INTENT_URL: http://127.0.0.1:8088
+        GATEWAY_INTENT_PREFIX: /otg
+      requires_file: "{root}/.venv-tinytalk/bin/python"
+    stop:
+      mode: pkill
+      pattern: cpu_inference.hybrid_gateway
+      grace_s: 5
+    health:
+      url: http://127.0.0.1:8090/gateway/health
+      rules:
+        online: json.status == 'ok'
+      detail:
+        - "speech→{json.speech_upstream}"
+        - "{json.intent_prefix}→{json.intent_upstream}"
+
+  # ══ EDGE ════════════════════════════════════════════════════════════
+  - id: ngrok
+    name: Ngrok Tunnel
+    group: edge
+    kind: process
+    port: 4040
+    log: "{log_dir}/ngrok.log"
+    pid_file: "{log_dir}/ngrok.pid"
+    depends_on: [gateway]
+    note: Một tunnel duy nhất vào gateway :8090 → / = speech, /otg = intent
+    start:
+      mode: script
+      script: "{root}/deploy/scripts/start_hybrid_ngrok.sh"
+      job_log: "{log_dir}/_job_ngrok.log"
+      timeout_s: 120
+      requires_bin: ngrok
+      requires_file: "{home}/.config/ngrok/ngrok.yml"
+    stop:
+      mode: pkill
+      pattern: ngrok start
+      grace_s: 3
+    health:
+      url: http://127.0.0.1:4040/api/tunnels
+      rules:
+        online: len(json.tunnels) > 0
+      public_url_from: json.tunnels[0].public_url
+      detail:
+        - "{json.tunnels[0].public_url}"
+    actions:
+      - id: print_urls
+        label: Print URLs
+        type: script
+        script: "{root}/deploy/scripts/print_hybrid_ngrok_urls.sh"
+        show_output: modal
+      - { id: inspector, label: Inspector, type: url, url: "http://127.0.0.1:4040" }
+
+  # ══ VLLM_STACK ══════════════════════════════════════════════════════
+  # Stack đa GPU. ĐỤNG PORT với hybrid (8001/8002/8088) → không chạy song song.
+  # Model/GPU lấy theo profile trong {root}/.env (INFERENCE_DEPLOY_PROFILE).
+  - id: vllm_all
+    name: vLLM Stack (4 service)
+    group: composite
+    kind: composite
+    note: Thay cho start_all_gui.sh — embed + chat + ASR + API
+    members: [vllm_embed, vllm_chat, asr, intent_vllm]
+    conflicts_with: [speech, cpu_inf, gpu_chat, intent, gateway]
+    stop:
+      mode: script
+      script: "{root}/deploy/scripts/stop_all.sh"
+
+  - id: vllm_embed
+    name: vLLM Embed
+    group: vllm
+    kind: process
+    port: 8001
+    log: "{log_dir}/vllm_embed.log"
+    pid_file: "{log_dir}/vllm_embed.pid"
+    conflicts_with: [cpu_inf]
+    start:
+      mode: process
+      cwd: "{root}"
+      shell: |
+        set -a; source "$HOME/tinytalk-vllm-venv/bin/activate" 2>/dev/null || true; set +a
+        source "$HOME/tinytalk-vllm-venv/bin/activate"
+        set -a; source .env; set +a
+        exec env CUDA_VISIBLE_DEVICES="${VLLM_EMBED_CUDA_DEVICES:-0}" \
+          vllm serve "$VLLM_EMBED_MODEL" \
+          --host 0.0.0.0 --port "${VLLM_EMBED_PORT:-8001}" \
+          --gpu-memory-utilization "${VLLM_EMBED_GPU_MEMORY_UTILIZATION:-0.4}" \
+          --max-model-len "${VLLM_EMBED_MAX_MODEL_LEN:-1024}" \
+          --runner pooling --convert embed
+      requires_file: "{home}/tinytalk-vllm-venv/bin/activate"
+    stop:
+      mode: pkill
+      pattern: vllm serve
+      grace_s: 15
+    health:
+      url: http://127.0.0.1:8001/health
+      rules:
+        online: "true == true"
+
+  - id: vllm_chat
+    name: vLLM Chat
+    group: vllm
+    kind: process
+    port: 8002
+    log: "{log_dir}/vllm_chat.log"
+    pid_file: "{log_dir}/vllm_chat.pid"
+    conflicts_with: [gpu_chat]
+    start:
+      mode: process
+      cwd: "{root}"
+      shell: |
+        source "$HOME/tinytalk-vllm-venv/bin/activate"
+        set -a; source .env; set +a
+        exec env CUDA_VISIBLE_DEVICES="${VLLM_CHAT_CUDA_DEVICES:-0}" \
+          vllm serve "$VLLM_CHAT_MODEL" \
+          --host 0.0.0.0 --port "${VLLM_CHAT_PORT:-8002}" \
+          --gpu-memory-utilization "${VLLM_CHAT_GPU_MEMORY_UTILIZATION:-0.45}" \
+          --max-model-len "${VLLM_CHAT_MAX_MODEL_LEN:-1024}"
+      requires_file: "{home}/tinytalk-vllm-venv/bin/activate"
+    stop:
+      mode: pkill
+      pattern: vllm serve
+      grace_s: 15
+    health:
+      url: http://127.0.0.1:8002/health
+      rules:
+        online: "true == true"
+
+  - id: asr
+    name: Parakeet ASR
+    group: vllm
+    kind: process
+    port: 8003
+    log: "{log_dir}/asr.log"
+    pid_file: "{log_dir}/asr.pid"
+    conflicts_with: [speech]
+    start:
+      mode: process
+      cwd: "{root}"
+      shell: |
+        source "$HOME/tinytalk-vllm-venv/bin/activate"
+        set -a; source .env; set +a
+        exec env CUDA_VISIBLE_DEVICES="${ASR_CUDA_DEVICES:-0}" \
+          PYTORCH_CUDA_ALLOC_CONF="${ASR_PYTORCH_CUDA_ALLOC_CONF:-expandable_segments:True}" \
+          uvicorn main:app --host 0.0.0.0 --port "${ASR_PORT:-8003}" --app-dir asr-server
+      requires_file: "{home}/tinytalk-vllm-venv/bin/activate"
+    stop:
+      mode: pkill
+      pattern: --app-dir asr-server
+      grace_s: 10
+    health:
+      url: http://127.0.0.1:8003/health
+      rules:
+        online: json.status == 'ok' and json.device == 'cuda'
+        degraded: json.status == 'ok'
+      detail:
+        - "{json.model_id}"
+        - "{json.device}"
+
+  - id: intent_vllm
+    name: Intent API (vLLM)
+    group: vllm
+    kind: process
+    port: 8088
+    log: "{log_dir}/intent.log"
+    pid_file: "{log_dir}/intent.pid"
+    conflicts_with: [intent]
+    note: Cùng process với Intent API, khác ở env profile vLLM
+    start:
+      mode: process
+      cwd: "{root}"
+      shell: |
+        set -a; source .env; set +a
+        source .venv-tinytalk/bin/activate
+        exec python -m uvicorn app.main:app --host 0.0.0.0 --port "${INTENT_API_PORT:-8088}"
+      requires_file: "{root}/.venv-tinytalk/bin/python"
+    stop:
+      mode: pkill
+      pattern: uvicorn app.main:app --host 0.0.0.0 --port 8088
+      grace_s: 5
+    health:
+      url: http://127.0.0.1:8088/health
+      rules:
+        online: json.status == 'ok' and json.cache.ready
+        degraded: json.status == 'ok' or json.status == 'degraded'
+      detail:
+        - "profile={json.inference_profile}"
+        - "intents={json.cache.enabled_intent_count}"
