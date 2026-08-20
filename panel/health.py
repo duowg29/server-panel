@@ -190,8 +190,11 @@ class HealthPoller:
             # có trả lời mà không khớp rule nào → coi là degraded, đừng nói dối OFFLINE
             return "DEGRADED" if rules else "ONLINE"
 
-        # không kết nối được → có thể đang khởi động, có thể thiếu env
-        if st.pid is not None and st.uptime_s is not None and st.uptime_s < 90:
+        # Không kết nối được nhưng process CÒN SỐNG → đang khởi động.
+        # Không đặt mốc thời gian: TinySpeech lần đầu phải tải Whisper large-v3
+        # (~3GB) rồi mới nghe port — mốc 90s cũ làm card nhảy về OFFLINE giữa
+        # chừng, trông như đã chết trong khi vẫn đang tải.
+        if self.sup.state(svc.id).alive:
             return "STARTING"
 
         missing = self._missing(svc)
