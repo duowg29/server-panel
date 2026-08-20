@@ -571,7 +571,13 @@ function renderStrip() {
   parts.push(`<span class="chip">CLK <b>${clk}</b></span>`);
   if (m && m.gpu && m.gpu.length) {
     const g = m.gpu[0];
-    parts.push(`<span class="chip ok">GPU <b>${g.name}</b> · ${g.used_mb}/${g.total_mb} MiB · ${g.util_pct}%</span>`);
+    // Tách hẳn hai con số: bộ nhớ và mức tải GPU là hai thứ khác nhau, để
+    // cạnh nhau không nhãn thì đọc thành "11.7/16.4 GB = 40%" (sai).
+    const gb = v => (v / 1024).toFixed(1);
+    const memPct = Math.round(100 * g.used_mb / g.total_mb);
+    parts.push(`<span class="chip ok">${g.name}</span>`);
+    parts.push(`<span class="chip ok">VRAM <b>${gb(g.used_mb)}/${gb(g.total_mb)} GB</b> (${memPct}%)</span>`);
+    parts.push(`<span class="chip ok">TẢI GPU <b>${g.util_pct}%</b></span>`);
   } else if (m && m.gpu_error) {
     parts.push(`<span class="chip bad">GPU ${m.gpu_error}</span>`);
   }

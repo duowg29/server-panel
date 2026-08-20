@@ -298,6 +298,28 @@ def _seq_log(job_log: Path, text: str) -> None:
         f.write(f"[{time.strftime('%H:%M:%S')}] {text}\n")
 
 
+
+def _progress_hint(member) -> str:
+    """Dòng cuối của log service + dung lượng cache HF, để biết nó có nhúc nhích."""
+    bits: list[str] = []
+    if member.log:
+        try:
+            size = Path(member.log).stat().st_size
+            bits.append(f"log {size // 1024}KB")
+        except OSError:
+            pass
+    hub = Path.home() / ".cache/huggingface/hub"
+    if hub.exists():
+        try:
+            newest = max(hub.glob("models--*"), key=lambda p: p.stat().st_mtime, default=None)
+            if newest and time.time() - newest.stat().st_mtime < 120:
+                total = sum(f.stat().st_size for f in newest.rglob("*") if f.is_file())
+                bits.append(f"{newest.name.split('--')[-1]} {total / 1e9:.1f}GB")
+        except OSError:
+            pass
+    return " · ".join(bits)
+
+
 async def _run_member_sequence(app_: FastAPI, svc, job) -> None:
     """Khởi động lần lượt từng member, chờ health từng cái.
 
@@ -334,11 +356,17 @@ async def _run_member_sequence(app_: FastAPI, svc, job) -> None:
                 rc = 1
                 break
             poller.wake(mid)
-            if res.get("pid"):
+            if res.get("already_running"):
+                _seq_log(log_path, f"[{mid}] đã chạy sẵn pid={res.get('pid')}, chờ health ...")
+            elif res.get("pid"):
                 _seq_log(log_path, f"[{mid}] pid={res['pid']}, chờ health ...")
+            if member.log:
+                _seq_log(log_path, f"[{mid}] chi tiết ở: {member.log}")
 
-            deadline = time.time() + member.startup_timeout_s
+            began = time.time()
+            deadline = began + member.startup_timeout_s
             last = ""
+            beat = began
             while time.time() < deadline:
                 await asyncio.sleep(2.0)
                 st = poller.snapshot.get(mid)
@@ -349,6 +377,18 @@ async def _run_member_sequence(app_: FastAPI, svc, job) -> None:
                 if st.state != last:
                     last = st.state
                     _seq_log(log_path, f"[{mid}]   ... {st.state}")
+                    beat = time.time()
+                elif time.time() - beat >= 20:
+                    # nhịp báo: chờ lâu (vd. tải Whisper 3GB) mà log im lìm thì
+                    # nhìn như panel treo. Kèm tiến triển đo được nếu có.
+                    beat = time.time()
+                    waited = int(time.time() - began)
+                    extra = _progress_hint(member)
+                    _seq_log(
+                        log_path,
+                        f"[{mid}]   ... {st.state} — đã chờ {waited}s"
+                        f"{' · ' + extra if extra else ''}",
+                    )
                 # process chết hẳn thì đừng chờ hết timeout
                 if st.state == "OFFLINE" and not sup.state(mid).alive:
                     _seq_log(

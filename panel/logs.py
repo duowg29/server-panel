@@ -11,6 +11,7 @@ import asyncio
 import logging
 import os
 import re
+import time
 from pathlib import Path
 
 log = logging.getLogger("panel.logs")
@@ -22,11 +23,18 @@ SECRET_RE = re.compile(
 )
 
 POLL_MS = 250
+#: thanh tiến trình đang vẽ dở → phát khung mới nhất mỗi ngần này giây
+PROGRESS_EVERY_S = 1.0
 CHUNK = 256 * 1024
 QUEUE_MAX = 2000
 
 
 def clean(line: str) -> str:
+    # tqdm/pip vẽ thanh tiến trình bằng \r trên CÙNG một dòng: cả nghìn khung
+    # hình dồn vào một dòng dài hàng chục KB. Giữ khung cuối, đúng như terminal.
+    if "\r" in line:
+        parts = [seg for seg in line.split("\r") if seg.strip()]
+        line = parts[-1] if parts else ""
     line = ANSI_RE.sub("", line)
     line = SECRET_RE.sub(r"\1••••redacted••••", line)
     return line.rstrip("\r\n")
@@ -100,6 +108,8 @@ class LogTailer:
         #: chỉ lần stat ĐẦU TIÊN mới được nhảy tới cuối (phần cũ do backfill lo).
         #: File xuất hiện muộn hơn phải đọc từ đầu, nếu không sẽ mất sạch nội dung.
         first_stat = True
+        last_progress = 0.0
+        last_frame = ""
 
         while True:
             try:
@@ -140,6 +150,17 @@ class LogTailer:
                         self._emit(clean(raw.decode("utf-8", "replace")))
                 except OSError as e:
                     self._emit(f"--- panel: đọc lỗi: {e} ---")
+
+            # Dòng đang vẽ dở, CHƯA có \n — thanh tiến trình tqdm nằm ở đây.
+            # Không phát thì suốt lúc tải model log im lìm, nhìn như treo.
+            if b"\r" in buf:
+                now = time.monotonic()
+                if now - last_progress >= PROGRESS_EVERY_S:
+                    last_progress = now
+                    frame = clean(buf.decode("utf-8", "replace"))
+                    if frame and frame != last_frame:
+                        last_frame = frame
+                        self._emit(frame)
 
             await asyncio.sleep(POLL_MS / 1000)
 

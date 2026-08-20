@@ -100,11 +100,13 @@ function vramBlocks(el, gpus, gpuError) {
       const cls = i < on ? (frac > 0.85 ? 'on hot' : 'on') : '';
       blocks += `<i class="${cls}"></i>`;
     }
+    const gb = v => (v / 1024).toFixed(1);
     out += `<div class="vram-row">
-        <span class="lbl">GPU${g.index} ${Math.round(frac * 100)}%</span>
+        <span class="lbl">VRAM ${Math.round(frac * 100)}%</span>
         <span class="blocks">${blocks}</span>
       </div>
-      <div class="sub">${esc(g.name)} · ${g.used_mb}/${g.total_mb} MiB · util ${g.util_pct}%</div>`;
+      <div class="sub">${esc(g.name)} · ${gb(g.used_mb)}/${gb(g.total_mb)} GB đã dùng`
+      + ` · mức tải GPU ${g.util_pct}%</div>`;
   });
   el.innerHTML = out;
 }
