@@ -33,10 +33,12 @@ services:
     members: [speech, cpu_inf, intent, gateway, ngrok]
     conflicts_with: [vllm_embed, vllm_chat, asr]
     start:
-      mode: script
-      script: "{root}/deploy/scripts/start_hybrid_with_ngrok.sh"
+      # panel tự khởi động lần lượt từng member, chờ health từng cái.
+      # KHÔNG dùng start_hybrid_with_ngrok.sh: script đó bỏ qua service đang
+      # tắt dở (race sau Stop) và có lần không khởi động nổi gateway mà không
+      # để lại dòng log nào.
+      mode: members
       job_log: "{log_dir}/_job_hybrid_ngrok.log"
-      timeout_s: 1200
     stop:
       mode: script
       script: "{root}/deploy/scripts/stop_hybrid.sh"
@@ -55,10 +57,8 @@ services:
     members: [speech, cpu_inf, intent, gateway]
     conflicts_with: [vllm_embed, vllm_chat, asr]
     start:
-      mode: script
-      script: "{root}/deploy/scripts/start_hybrid.sh"
+      mode: members
       job_log: "{log_dir}/_job_hybrid.log"
-      timeout_s: 900
     stop:
       mode: script
       script: "{root}/deploy/scripts/stop_hybrid.sh"
@@ -71,17 +71,21 @@ services:
     port: 8000
     log: "{log_dir}/speech.log"
     pid_file: "{log_dir}/speech.pid"
+    # lần đầu phải tải Whisper large-v3 (~3GB) rồi nạp lên GPU
+    startup_timeout_s: 1800
     start:
       mode: process
       cwd: "{root}"
-      # shell chứ không argv: cần `source` env file
+      # shell chứ không argv: cần `source` env file.
+      # Dùng .venv-speech, KHÔNG dùng `python3` trần như start_hybrid.sh:29 —
+      # python hệ thống không có fastapi/faster-whisper.
       shell: |
         set -a; source speech_service/env.gpu.example; set +a
-        exec python3 speech_service_local.py
+        exec .venv-speech/bin/python speech_service_local.py
       env:
         HOST: 0.0.0.0
         PORT: "8000"
-      requires_file: "{root}/speech_service_local.py"
+      requires_file: "{root}/.venv-speech/bin/python"
     stop:
       mode: pkill
       pattern: speech_service_local.py
@@ -104,6 +108,12 @@ services:
         - /api/speech/align
         - /api/speech/recognize
     actions:
+      - id: bootstrap
+        label: Dựng venv
+        type: script
+        script: "{panel}/scripts/bootstrap_speech.sh"
+        confirm: "Tạo .venv-speech và cài torch CUDA + faster-whisper (~3GB)?"
+        show_output: modal
       - { id: docs, label: API Docs, type: url, url: "http://127.0.0.1:8000/docs" }
 
   - id: cpu_inf

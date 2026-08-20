@@ -417,6 +417,19 @@ class Supervisor:
         return {"ok": True, "job_id": job.id, "log": job.log_path,
                 "show_output": action.show_output}
 
+    def new_job(self, svc_id: str, kind: str, log_path: str | Path, label: str) -> Job:
+        """Job không gắn với process nào — panel tự điều phối (composite members).
+
+        pid/popen đều None nên poll_jobs() không đụng tới; người tạo tự set rc.
+        """
+        self._job_seq += 1
+        job = Job(
+            id=f"{svc_id}-{kind}-{self._job_seq}", svc_id=svc_id, kind=kind,
+            pid=None, log_path=str(log_path), started_at=time.time(), label=label,
+        )
+        self.jobs[job.id] = job
+        return job
+
     def poll_jobs(self) -> list[Job]:
         """Thu hoạch job đã xong. Trả về danh sách job vừa kết thúc phiên này."""
         _reap()

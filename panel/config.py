@@ -51,7 +51,7 @@ class Action:
 
 @dataclass
 class StartSpec:
-    mode: str  # process | script
+    mode: str  # process | script | members
     cwd: str | None = None
     argv: list[str] = field(default_factory=list)
     shell: str | None = None
@@ -97,6 +97,8 @@ class Service:
     actions: list[Action] = field(default_factory=list)
     emphasis: str | None = None
     warn_on_start: str | None = None
+    #: bao lâu thì coi như service này khởi động thất bại (composite dùng)
+    startup_timeout_s: int = 180
     log_metrics: dict[str, Any] = field(default_factory=dict)
     note: str | None = None
 
@@ -270,8 +272,10 @@ def _parse_service(d: dict[str, Any]) -> Service:
     if "start" in d:
         s = d["start"]
         mode = s.get("mode", "process")
-        if mode not in {"process", "script"}:
-            raise ConfigError(f"[{d['id']}] start.mode phải là process|script, gặp {mode!r}")
+        if mode not in {"process", "script", "members"}:
+            raise ConfigError(
+                f"[{d['id']}] start.mode phải là process|script|members, gặp {mode!r}"
+            )
         start = StartSpec(
             mode=mode, cwd=s.get("cwd"), argv=list(s.get("argv") or []),
             shell=s.get("shell"), script=s.get("script"),
@@ -322,6 +326,7 @@ def _parse_service(d: dict[str, Any]) -> Service:
         conflicts_with=list(d.get("conflicts_with") or []),
         actions=[_parse_action(a) for a in (d.get("actions") or [])],
         emphasis=d.get("emphasis"), warn_on_start=d.get("warn_on_start"),
+        startup_timeout_s=int(d.get("startup_timeout_s", 180)),
         log_metrics=dict(d.get("log_metrics") or {}),
         note=d.get("note"),
     )

@@ -262,6 +262,107 @@ def _svc_or_404(request: Request, svc_id: str):
     return cfg.services[svc_id]
 
 
+def _seq_log(job_log: Path, text: str) -> None:
+    job_log.parent.mkdir(parents=True, exist_ok=True)
+    with job_log.open("a", encoding="utf-8") as f:
+        f.write(f"[{time.strftime('%H:%M:%S')}] {text}\n")
+
+
+async def _run_member_sequence(app_: FastAPI, svc, job) -> None:
+    """Khởi động lần lượt từng member, chờ health từng cái.
+
+    Thay cho start_hybrid.sh: script đó bỏ qua service đang tắt dở (race sau
+    Stop) và có lần không khởi động nổi gateway mà không để lại dòng log nào.
+    Ở đây mỗi bước đều ghi rõ, và hỏng ở đâu thì dừng ở đó.
+    """
+    cfg: Config = app_.state.cfg
+    sup: Supervisor = app_.state.sup
+    poller: HealthPoller = app_.state.poller
+    log_path = Path(job.log_path)
+
+    _seq_log(log_path, f"=== {svc.name}: khởi động {len(svc.members)} service ===")
+    rc = 0
+    try:
+        for mid in svc.members:
+            member = cfg.services[mid]
+            state = poller.state_of(mid)
+
+            if state == "ONLINE":
+                _seq_log(log_path, f"[{mid}] đã ONLINE — bỏ qua")
+                continue
+            if state == "NO_ENV":
+                miss = ", ".join(poller.snapshot[mid].missing)
+                _seq_log(log_path, f"[{mid}] THIẾU MÔI TRƯỜNG: {miss}")
+                rc = 1
+                break
+
+            _seq_log(log_path, f"[{mid}] đang khởi động ...")
+            try:
+                res = await asyncio.to_thread(sup.start, mid)
+            except SupervisorError as e:
+                _seq_log(log_path, f"[{mid}] LỖI: {e}")
+                rc = 1
+                break
+            poller.wake(mid)
+            if res.get("pid"):
+                _seq_log(log_path, f"[{mid}] pid={res['pid']}, chờ health ...")
+
+            deadline = time.time() + member.startup_timeout_s
+            last = ""
+            while time.time() < deadline:
+                await asyncio.sleep(2.0)
+                st = poller.snapshot.get(mid)
+                if st is None:
+                    continue
+                if st.state == "ONLINE":
+                    break
+                if st.state != last:
+                    last = st.state
+                    _seq_log(log_path, f"[{mid}]   ... {st.state}")
+                # process chết hẳn thì đừng chờ hết timeout
+                if st.state == "OFFLINE" and not sup.state(mid).alive:
+                    _seq_log(
+                        log_path,
+                        f"[{mid}] process đã chết — xem {member.log or 'log'}",
+                    )
+                    rc = 1
+                    break
+            else:
+                _seq_log(
+                    log_path,
+                    f"[{mid}] QUÁ HẠN sau {member.startup_timeout_s}s "
+                    f"(trạng thái: {poller.state_of(mid)})",
+                )
+                rc = 1
+
+            if rc:
+                break
+            if poller.state_of(mid) != "ONLINE":
+                rc = 1
+                break
+            _seq_log(log_path, f"[{mid}] ONLINE ✔")
+
+        if rc == 0:
+            _seq_log(log_path, "=== TẤT CẢ ONLINE ===")
+            url = poller.public_url()
+            if url:
+                _seq_log(log_path, f"ngrok: {url}")
+                _seq_log(log_path, f"SPEECH_SERVICE_URL={url}")
+                _seq_log(log_path, f"INTENT_SERVICE_URL={url}/otg")
+        else:
+            _seq_log(log_path, "=== DỪNG: có service không lên được ===")
+    except asyncio.CancelledError:
+        _seq_log(log_path, "=== BỊ HUỶ ===")
+        rc = 130
+        raise
+    except Exception as e:  # noqa: BLE001
+        _seq_log(log_path, f"=== LỖI PANEL: {type(e).__name__}: {e} ===")
+        rc = 1
+    finally:
+        job.rc = rc
+        job.finished_at = time.time()
+
+
 @app.post("/api/services/{svc_id}/start")
 async def api_start(request: Request, svc_id: str):
     svc = _svc_or_404(request, svc_id)
@@ -278,6 +379,18 @@ async def api_start(request: Request, svc_id: str):
     unmet = [d for d in svc.depends_on if poller.state_of(d) != "ONLINE"]
     if unmet:
         raise HTTPException(409, "cần ONLINE trước: " + ", ".join(unmet))
+
+    # composite do panel tự điều phối
+    if svc.start and svc.start.mode == "members":
+        sup: Supervisor = request.app.state.sup
+        running = [j for j in sup.jobs.values() if j.svc_id == svc_id and j.running]
+        if running:
+            return {"ok": True, "job_id": running[0].id, "already_running": True}
+        log_path = Path(svc.start.job_log or (request.app.state.cfg.log_dir
+                                              / f"_job_{svc_id}.log"))
+        job = sup.new_job(svc_id, "start", log_path, f"start {svc.name}")
+        asyncio.create_task(_run_member_sequence(request.app, svc, job))
+        return {"ok": True, "job_id": job.id}
 
     try:
         res = await asyncio.to_thread(request.app.state.sup.start, svc_id)
