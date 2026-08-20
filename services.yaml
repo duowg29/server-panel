@@ -76,16 +76,14 @@ services:
     start:
       mode: process
       cwd: "{root}"
-      # shell chứ không argv: cần `source` env file.
-      # Dùng .venv-speech, KHÔNG dùng `python3` trần như start_hybrid.sh:29 —
-      # python hệ thống không có fastapi/faster-whisper.
+      # GIỐNG HỆT start_hybrid.sh:20-31 — panel không được chạy khác server.
       shell: |
         set -a; source speech_service/env.gpu.example; set +a
-        exec .venv-speech/bin/python speech_service_local.py
+        exec python3 speech_service_local.py
       env:
         HOST: 0.0.0.0
         PORT: "8000"
-      requires_file: "{root}/.venv-speech/bin/python"
+      requires_file: "{root}/speech_service_local.py"
     stop:
       mode: pkill
       pattern: speech_service_local.py
@@ -108,11 +106,12 @@ services:
         - /api/speech/align
         - /api/speech/recognize
     actions:
-      - id: bootstrap
-        label: Dựng venv
-        type: script
-        script: "{panel}/scripts/bootstrap_speech.sh"
-        confirm: "Tạo .venv-speech và cài torch CUDA + faster-whisper (~3GB)?"
+      - id: deps
+        label: Cài phụ thuộc
+        type: shell
+        cwd: "{panel}"
+        shell: bash scripts/install_server_deps.sh speech
+        confirm: "Cài fastapi + faster-whisper + torch CUDA vào python3 hệ thống (~3GB)?<br>start_hybrid.sh chạy speech bằng python3 trần nên deps phải nằm ở đó."
         show_output: modal
       - { id: docs, label: API Docs, type: url, url: "http://127.0.0.1:8000/docs" }
 
@@ -149,10 +148,11 @@ services:
         - "chat={json.chat_loaded}"
     actions:
       # Không script nào trong intent-service tạo .venv-cpu-inf — bù ở đây
-      - id: bootstrap
-        label: Dựng venv
-        type: script
-        script: "{panel}/scripts/bootstrap_cpu_inf.sh"
+      - id: deps
+        label: Cài phụ thuộc
+        type: shell
+        cwd: "{panel}"
+        shell: bash scripts/install_server_deps.sh cpu-inf
         confirm: "Tạo .venv-cpu-inf và cài torch CPU + llama-cpp + sentence-transformers?<br>Mất khoảng 5-15 phút tuỳ mạng."
         show_output: modal
       - id: models

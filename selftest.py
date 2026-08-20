@@ -286,6 +286,54 @@ async def test_metrics(tmp: Path, cfg: cfgmod.Config) -> None:
         check("nvidia-smi vắng → không crash", mc.gpu_error is not None, str(mc.gpu_error))
 
 
+def test_parity() -> None:
+    """Panel phải chạy ĐÚNG lệnh mà start_hybrid.sh của server dùng.
+
+    Server phải chạy độc lập được: `bash deploy/scripts/start_hybrid.sh` không
+    cần panel. Nếu panel dùng interpreter khác (vd. một venv riêng do panel tự
+    nghĩ ra) thì hai đường sẽ lệch — chạy tay hỏng, chạy panel được, hoặc ngược
+    lại. Test này khoá điều đó lại.
+    """
+    print("\n== parity với start_hybrid.sh ==")
+    here = Path(__file__).resolve().parent
+    cfg_path = here / "services.yaml"
+    if not cfg_path.exists():
+        check("có services.yaml", False)
+        return
+    cfg = cfgmod.load(cfg_path)
+
+    script = Path(cfg.defaults["root"]) / "deploy/scripts/start_hybrid.sh"
+    if not script.exists():
+        print("     (bỏ qua — không thấy start_hybrid.sh)")
+        return
+    body = script.read_text(encoding="utf-8")
+
+    # (service, đoạn phải xuất hiện trong CẢ start_hybrid.sh lẫn lệnh của panel)
+    cases = [
+        ("speech", "python3 speech_service_local.py"),
+        ("cpu_inf", ".venv-cpu-inf/bin/python"),
+        ("cpu_inf", "cpu_inference.server"),
+        ("intent", ".venv-tinytalk/bin/python"),
+        ("intent", "uvicorn app.main:app"),
+        ("gateway", ".venv-tinytalk/bin/python"),
+        ("gateway", "cpu_inference.hybrid_gateway"),
+    ]
+    for svc_id, frag in cases:
+        svc = cfg.services.get(svc_id)
+        if svc is None or svc.start is None:
+            check(f"{svc_id}: có cấu hình start", False)
+            continue
+        panel_cmd = " ".join(svc.start.argv) if svc.start.argv else (svc.start.shell or "")
+        in_script = frag in body
+        in_panel = frag in panel_cmd
+        check(
+            f"{svc_id}: dùng {frag!r} giống server",
+            in_script and in_panel,
+            "" if (in_script and in_panel)
+            else f"script={in_script} panel={in_panel}",
+        )
+
+
 async def main() -> int:
     tmp = Path(tempfile.mkdtemp(prefix="panel-selftest-"))
     print(f"tmp: {tmp}")
@@ -294,6 +342,7 @@ async def main() -> int:
         test_supervisor(cfg)
         await test_logs(tmp)
         await test_metrics(tmp, cfg)
+        test_parity()
     finally:
         shutil.rmtree(tmp, ignore_errors=True)
 
