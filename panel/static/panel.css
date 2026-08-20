@@ -485,3 +485,32 @@ button.on { border-color: var(--cyan); color: var(--cyan); }
 }
 .toast.err { border-left-color: var(--red); color: var(--red); }
 .toast.ok { border-left-color: var(--green); color: var(--green); }
+
+/* ── Thanh tiến trình composite ──────────────────────────────────── */
+.prog {
+  height: 8px;
+  background: var(--bg-sunken);
+  border: 1px solid var(--line);
+  border-radius: var(--radius);
+  overflow: hidden;
+}
+.prog > i {
+  display: block;
+  height: 100%;
+  background: linear-gradient(90deg, #0a6a7a, var(--cyan));
+  box-shadow: var(--glow-cyan);
+  transition: width .4s ease;
+}
+.prog.done > i { background: linear-gradient(90deg, #0a7a52, var(--green)); box-shadow: var(--glow-green); }
+.prog__cap {
+  display: flex;
+  gap: .5rem;
+  flex-wrap: wrap;
+  align-items: baseline;
+  font-size: 10px;
+  color: var(--fg-dim);
+}
+.prog__cap b { color: var(--cyan); font-size: 12px; font-weight: 500; }
+.prog.done + .prog__cap b { color: var(--green); }
+.prog__cap .mono { color: var(--fg); white-space: nowrap; overflow: hidden;
+  text-overflow: ellipsis; max-width: 100%; }

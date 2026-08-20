@@ -107,6 +107,8 @@ class Service:
 class Group:
     id: str
     label: str
+    #: ẩn khỏi UI nhưng VẪN nạp — conflicts_with của nhóm khác còn trỏ tới
+    hidden: bool = False
 
 
 @dataclass
@@ -360,7 +362,8 @@ def load(path: str | Path) -> Config:
     defaults["root"] = vars_["root"]
     defaults["log_dir"] = vars_["log_dir"]
 
-    groups = [Group(id=g["id"], label=g.get("label", g["id"]))
+    groups = [Group(id=g["id"], label=g.get("label", g["id"]),
+                    hidden=bool(g.get("hidden", False)))
               for g in (raw.get("groups") or [])]
 
     services: dict[str, Service] = {}

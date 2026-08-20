@@ -93,6 +93,7 @@ function renderGroups() {
   if (!State.cfg) return;
 
   for (const g of State.cfg.groups) {
+    if (g.hidden) continue;   // vẫn nạp trong config (conflicts_with cần), chỉ ẩn UI
     const svcs = State.cfg.services.filter(s => s.group === g.id);
     if (!svcs.length) continue;
     const sec = el('section', 'sec');
@@ -139,6 +140,21 @@ function renderCard(svc) {
     card.appendChild(el('div', 'card__note', st.error));
   } else if (svc.note) {
     card.appendChild(el('div', 'card__note', svc.note));
+  }
+
+  // thanh tiến trình cho card composite — 100% = mọi service đã lên
+  if (svc.kind === 'composite' && st.progress) {
+    const pr = st.progress;
+    const bar = el('div', 'prog' + (pr.pct >= 100 ? ' done' : ''));
+    const fill = el('i');
+    fill.style.width = pr.pct + '%';
+    bar.appendChild(fill);
+    const cap = el('div', 'prog__cap');
+    cap.appendChild(el('b', null, pr.pct + '%'));
+    cap.appendChild(el('span', null, `${pr.done}/${pr.total} service`));
+    if (pr.current) cap.appendChild(el('span', null, '→ ' + pr.current));
+    if (pr.label) cap.appendChild(el('span', 'mono', pr.label));
+    card.append(bar, cap);
   }
 
   if (st.public_url) {

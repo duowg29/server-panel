@@ -16,6 +16,7 @@ import contextlib
 import json
 import logging
 import os
+import re
 import time
 from pathlib import Path
 from typing import Any
@@ -158,6 +159,8 @@ def _status_payload(app: FastAPI) -> dict[str, Any]:
     for sid, entry in services.items():
         svc = app.state.cfg.services.get(sid)
         entry["blocked_by"] = _blocked_by(app, svc) if svc else []
+        if svc and svc.kind == "composite":
+            entry["progress"] = _composite_progress(app, svc)
     return {
         "type": "status",
         "ts": time.time(),
@@ -180,7 +183,8 @@ def _config_payload(app: FastAPI) -> dict[str, Any]:
         "readonly": cfgmod.readonly(),
         "log_dir": str(cfg.log_dir),
         "root": cfg.defaults.get("root"),
-        "groups": [{"id": g.id, "label": g.label} for g in cfg.groups],
+        "groups": [{"id": g.id, "label": g.label, "hidden": g.hidden}
+                   for g in cfg.groups],
         "services": [
             {
                 "id": s.id, "name": s.name, "group": s.group, "kind": s.kind,
@@ -266,6 +270,69 @@ def _svc_or_404(request: Request, svc_id: str):
     if svc_id not in cfg.services:
         raise HTTPException(404, f"không có service {svc_id!r}")
     return cfg.services[svc_id]
+
+
+
+#: khung tqdm kiểu "  47%|####7     | 560M/1.18G [00:50<00:56, 11.2MB/s]"
+_TQDM_RE = re.compile(r"(\d{1,3})%\|")
+
+
+def _log_pct(path: str | None) -> tuple[float, str]:
+    """% tải dở của service, moi từ thanh tiến trình ở cuối log.
+
+    Chỉ đọc 8KB cuối nên rẻ, gọi mỗi tick được.
+    """
+    if not path:
+        return 0.0, ""
+    try:
+        p = Path(path)
+        size = p.stat().st_size
+        with p.open("rb") as f:
+            f.seek(max(0, size - 8192))
+            tail = f.read().decode("utf-8", "replace")
+    except OSError:
+        return 0.0, ""
+    frames = _TQDM_RE.findall(tail)
+    if not frames:
+        return 0.0, ""
+    pct = min(100, int(frames[-1])) / 100.0
+    # lấy nguyên khung cuối làm nhãn hiển thị
+    seg = tail.replace("\r", "\n").splitlines()
+    label = next((x.strip() for x in reversed(seg) if _TQDM_RE.search(x)), "")
+    return pct, label[:80]
+
+
+def _composite_progress(app_: FastAPI, svc) -> dict[str, Any]:
+    """Tiến độ của một card composite: 100% = mọi member đã ONLINE.
+
+    Mỗi member ONLINE tính 1 phần. Member đang khởi động tính theo % tải model
+    của nó, để thanh vẫn nhích khi đang tải Whisper 3GB chứ không đứng im.
+    """
+    poller: HealthPoller = app_.state.poller
+    cfg: Config = app_.state.cfg
+    total = len(svc.members)
+    if not total:
+        return {"pct": 0, "done": 0, "total": 0, "current": None, "label": ""}
+
+    done = 0
+    current = None
+    partial = 0.0
+    label = ""
+    for mid in svc.members:
+        st = poller.state_of(mid)
+        if st == "ONLINE":
+            done += 1
+            continue
+        if current is None:
+            current = mid
+            if st == "STARTING":
+                member = cfg.services.get(mid)
+                partial, label = _log_pct(member.log if member else None)
+    pct = int(round((done + partial) / total * 100))
+    return {
+        "pct": min(pct, 100 if done == total else 99),
+        "done": done, "total": total, "current": current, "label": label,
+    }
 
 
 def _really_running(app_: FastAPI, svc_id: str) -> bool:

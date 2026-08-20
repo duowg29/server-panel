@@ -19,7 +19,9 @@ defaults:
 groups:
   - { id: composite, label: ONE_CLICK }
   - { id: hybrid, label: HYBRID_STACK }
-  - { id: vllm, label: VLLM_STACK }
+  # Ẩn: đụng port 8001/8002/8088 với hybrid nên không chạy song song được.
+  # Vẫn khai báo để conflicts_with của nhóm hybrid còn trỏ tới. Bỏ hidden là hiện lại.
+  - { id: vllm, label: VLLM_STACK, hidden: true }
   - { id: edge, label: EDGE }
 
 services:
