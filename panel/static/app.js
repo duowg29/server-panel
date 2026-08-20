@@ -158,9 +158,10 @@ function renderCard(svc) {
   }
 
   if (st.public_url) {
+    const line = el('div', 'card__url');
     const a = el('a', null, st.public_url);
     a.href = st.public_url; a.target = '_blank'; a.rel = 'noreferrer';
-    const line = el('div', 'card__meta'); line.appendChild(a);
+    line.append(el('span', null, '🌐 '), a);
     card.appendChild(line);
   }
 
@@ -174,7 +175,7 @@ function renderCard(svc) {
   const conflicts = st.blocked_by || [];
 
   if (svc.can_start) {
-    const b = el('button', 'go', 'Start');
+    const b = el('button', 'go' + (svc.emphasis === 'primary' ? ' big' : ''), '▶  Chạy');
     b.disabled = State.busy.has(svc.id) || unmet.length > 0 || conflicts.length > 0 ||
       state === 'NO_ENV';
     if (unmet.length) b.title = 'Cần ONLINE trước: ' + unmet.join(', ');
@@ -184,43 +185,45 @@ function renderCard(svc) {
     btns.appendChild(b);
   }
   if (svc.can_stop) {
-    const b = el('button', 'stop', 'Stop');
+    const b = el('button', 'stop' + (svc.emphasis === 'primary' ? ' big' : ''), '■  Dừng');
     b.disabled = State.busy.has(svc.id) || (!running && !st.pid);
     b.onclick = () => act(svc.id, 'stop');
     btns.appendChild(b);
   }
   if (svc.can_start && svc.can_stop) {
-    const b = el('button', null, 'Restart');
+    const b = el('button', null, '↻  Khởi động lại');
     b.disabled = State.busy.has(svc.id) || state === 'NO_ENV';
     b.onclick = () => act(svc.id, 'restart');
     btns.appendChild(b);
   }
   if (svc.log || svc.start_mode === 'script') {
-    const b = el('button', Logs.has(svc.id) ? 'on' : null, 'Logs');
+    const b = el('button', Logs.has(svc.id) ? 'on' : null, '▤  Log');
     b.onclick = () => Logs.toggle(svc.id, svc.name);
     btns.appendChild(b);
-    const p = el('button', null, 'Pop ⇱');
+    const p = el('button', 'ghost', '⇱  Cửa sổ');
     p.onclick = () => window.open('/popout?log=' + encodeURIComponent(svc.id),
       'log_' + svc.id, 'width=960,height=640');
     btns.appendChild(p);
   }
   card.appendChild(btns);
 
-  // hàng nút phụ: action + sửa config
-  const extra = el('div', 'btns');
+  // Hàng nút phụ nằm sau nút "Thêm" — trước đây 7-8 nút chen chúc một hàng,
+  // nhìn rối và không biết cái nào quan trọng.
+  const extra = el('div', 'btns more');
+  extra.style.display = 'none';
   (svc.actions || []).forEach(a => {
     const b = el('button', null, a.label);
     b.onclick = () => runAction(svc, a);
     extra.appendChild(b);
   });
   if (!State.cfg.readonly) {
-    const add = el('button', null, '+ Lệnh'); add.onclick = () => addActionModal(svc);
-    const ed = el('button', null, 'Sửa'); ed.onclick = () => editModal(svc);
-    const rm = el('button', null, 'Xóa'); rm.onclick = () => deleteService(svc);
+    const add = el('button', 'ghost', '＋ Lệnh'); add.onclick = () => addActionModal(svc);
+    const ed = el('button', 'ghost', '✎ Sửa'); ed.onclick = () => editModal(svc);
+    const rm = el('button', 'ghost', '🗑 Xoá'); rm.onclick = () => deleteService(svc);
     extra.append(add, ed, rm);
   }
   if (svc.log) {
-    const tr = el('button', null, 'Xoá log');
+    const tr = el('button', 'ghost', '⌫ Xoá file log');
     tr.title = 'Truncate ' + svc.log;
     tr.onclick = async () => {
       if (!await confirmModal('Xoá sạch nội dung <b>' + svc.log + '</b>?')) return;
@@ -229,7 +232,17 @@ function renderCard(svc) {
     };
     extra.appendChild(tr);
   }
-  if (extra.children.length) card.appendChild(extra);
+  if (extra.children.length) {
+    const toggle = el('button', 'ghost', '⋯  Thêm');
+    toggle.onclick = () => {
+      const open = extra.style.display === 'none';
+      extra.style.display = open ? 'flex' : 'none';
+      toggle.textContent = open ? '⋯  Thu gọn' : '⋯  Thêm';
+      toggle.classList.toggle('on', open);
+    };
+    btns.appendChild(toggle);
+    card.appendChild(extra);
+  }
 
   return card;
 }
@@ -387,27 +400,30 @@ const Logs = {
     $('#logempty').style.display = 'none';
 
     const root = el('div', 'logpane');
+
+    // Hàng 1: tên log + đóng. Hàng 2: thanh công cụ, nút CÓ CHỮ.
     const head = el('div', 'logpane__head');
     const t = el('span', 'logpane__title', (title || id) + '.log');
+    t.title = 'Bấm để thu gọn';
     t.onclick = () => root.classList.toggle('collapsed');
     head.appendChild(t);
     head.appendChild(el('span', 'grow'));
-
-    const bPause = el('button', null, '⏸');
-    bPause.title = 'Tạm dừng';
-    const bGrep = el('button', null, '⌕');
-    bGrep.title = 'Lọc';
-    const bFollow = el('button', 'on', '⤓');
-    bFollow.title = 'Bám đáy';
-    const bPop = el('button', null, '⇱');
-    bPop.title = 'Mở cửa sổ riêng';
-    const bClose = el('button', null, '✕');
-    head.append(bPause, bGrep, bFollow, bPop, bClose);
+    const bClose = el('button', 'ghost', '✕  Đóng');
+    head.appendChild(bClose);
     root.appendChild(head);
+
+    const bar = el('div', 'logpane__bar');
+    const bPause = el('button', null, '⏸  Tạm dừng');
+    const bGrep = el('button', null, '⌕  Lọc');
+    const bFollow = el('button', 'on', '⤓  Bám đáy');
+    const bClear = el('button', null, '⌫  Xoá màn hình');
+    const bPop = el('button', null, '⇱  Cửa sổ riêng');
+    bar.append(bPause, bGrep, bFollow, bClear, bPop);
+    root.appendChild(bar);
 
     const tools = el('div', 'logpane__tools');
     const inp = el('input');
-    inp.placeholder = 'regex lọc dòng…';
+    inp.placeholder = 'lọc dòng theo regex, ví dụ:  ERROR|WARN';
     tools.appendChild(inp);
     root.appendChild(tools);
 
@@ -427,15 +443,18 @@ const Logs = {
     bPause.onclick = () => {
       pane.paused = !pane.paused;
       bPause.classList.toggle('on', pane.paused);
-      bPause.textContent = pane.paused ? '▶' : '⏸';
+      bPause.textContent = pane.paused ? '▶  Chạy tiếp' : '⏸  Tạm dừng';
     };
     bFollow.onclick = () => {
       pane.follow = !pane.follow;
       bFollow.classList.toggle('on', pane.follow);
+      bFollow.textContent = pane.follow ? '⤓  Bám đáy' : '⤓  Không bám';
       if (pane.follow) this._toBottom(pane);
     };
+    bClear.onclick = () => { pane.buffer = []; this._redraw(pane); };
     bGrep.onclick = () => {
       tools.classList.toggle('show');
+      bGrep.classList.toggle('on', tools.classList.contains('show'));
       if (tools.classList.contains('show')) inp.focus();
       else { inp.value = ''; pane.grep = null; this._redraw(pane); }
     };
@@ -545,7 +564,7 @@ const Logs = {
         pane.chip.onclick = () => { pane.follow = true; this._toBottom(pane); };
         pane.root.appendChild(pane.chip);
       }
-      pane.chip.textContent = '↓ ' + pane.unseen + ' dòng mới';
+      pane.chip.textContent = '↓  ' + pane.unseen + ' dòng mới';
     } else if (pane.chip) {
       pane.chip.remove();
       pane.chip = null;
@@ -618,7 +637,7 @@ async function loadConfig() {
 
 function connect() {
   const ws = new WebSocket(`ws://${location.host}/ws/status`);
-  ws.onopen = () => { $('#conn').textContent = '● live'; $('#conn').style.color = 'var(--green)'; };
+  ws.onopen = () => { $('#conn').textContent = '● đang theo dõi'; $('#conn').style.color = 'var(--green)'; };
   ws.onmessage = ev => {
     const d = JSON.parse(ev.data);
     State.status = d.services || {};
@@ -637,7 +656,7 @@ function connect() {
     renderStrip();
   };
   ws.onclose = () => {
-    $('#conn').textContent = '○ mất kết nối, thử lại…';
+    $('#conn').textContent = '○ mất kết nối, đang thử lại…';
     $('#conn').style.color = 'var(--red)';
     setTimeout(connect, 2000);
   };

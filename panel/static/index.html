@@ -11,18 +11,18 @@
 
 <div class="topbar">
   <span class="brand">■ TINYTALK</span>
-  <span class="sep">·</span>
-  <span>LOCAL BOOK</span>
+  <span class="sep">/</span>
+  <span>bảng điều khiển server</span>
   <span class="spacer"></span>
-  <span id="conn">○ connecting</span>
+  <span id="conn">○ đang kết nối…</span>
 </div>
 
 <div class="masthead">
-  <h1>SERVER_PANEL</h1>
-  <span class="tag">127.0.0.1:9199 · shell as current user · not for public bind</span>
+  <h1>SERVER<em>_</em>PANEL</h1>
+  <span class="tag">Chạy trên 127.0.0.1:9199 · quyền như user hiện tại · đừng mở ra mạng</span>
   <div class="actions">
-    <button id="btn-reload">Reload config</button>
-    <button id="btn-closeall">Đóng hết log</button>
+    <button id="btn-reload">↻  Nạp lại config</button>
+    <button id="btn-closeall">✕  Đóng hết log</button>
   </div>
 </div>
 
@@ -45,11 +45,11 @@
           <div class="sub" id="wav-sub">—</div>
         </div>
         <div class="tile wide">
-          <h3>Requests / min</h3>
+          <h3>Request mỗi phút</h3>
           <div id="chart-req"></div>
         </div>
         <div class="tile wide">
-          <h3>Req by service</h3>
+          <h3>Request theo service</h3>
           <div id="chart-bars"></div>
         </div>
         <div class="telefoot">
@@ -66,8 +66,10 @@
   <aside class="col-right">
     <div class="logstack" id="logstack">
       <div class="logempty" id="logempty">
-        Bấm <b style="color:var(--cyan)">&nbsp;LOGS&nbsp;</b> trên một card để mở log ở đây.<br>
-        Mở được nhiều log cùng lúc — khung này bám theo khi bạn cuộn.
+        <div style="font-size:2rem;opacity:.5">▤</div>
+        <div>Bấm <b style="color:var(--cyan)">▤ Log</b> trên một card để xem log ở đây.</div>
+        <div style="font-size:12px">Mở được nhiều log cùng lúc.
+          Khung này bám theo màn hình khi bạn cuộn trang.</div>
       </div>
     </div>
   </aside>

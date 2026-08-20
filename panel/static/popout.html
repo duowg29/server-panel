@@ -11,12 +11,16 @@
   <div class="logpane__head">
     <span class="logpane__title" id="title">log</span>
     <span class="grow"></span>
-    <button id="pause" title="Tạm dừng">⏸</button>
-    <button id="grep" title="Lọc">⌕</button>
-    <button id="follow" class="on" title="Bám đáy">⤓</button>
-    <button id="clear" title="Xoá màn hình">⌫</button>
   </div>
-  <div class="logpane__tools" id="tools"><input id="q" placeholder="regex lọc dòng…"></div>
+  <div class="logpane__bar">
+    <button id="pause">⏸  Tạm dừng</button>
+    <button id="grep">⌕  Lọc</button>
+    <button id="follow" class="on">⤓  Bám đáy</button>
+    <button id="clear">⌫  Xoá màn hình</button>
+  </div>
+  <div class="logpane__tools" id="tools">
+    <input id="q" placeholder="lọc dòng theo regex, ví dụ:  ERROR|WARN">
+  </div>
   <div class="logpane__body" id="body"></div>
 </div>
 
@@ -67,15 +71,17 @@ function push(l) {
 $('#pause').onclick = e => {
   paused = !paused;
   e.target.classList.toggle('on', paused);
-  e.target.textContent = paused ? '▶' : '⏸';
+  e.target.textContent = paused ? '▶  Chạy tiếp' : '⏸  Tạm dừng';
 };
 $('#follow').onclick = e => {
   follow = !follow;
   e.target.classList.toggle('on', follow);
+  e.target.textContent = follow ? '⤓  Bám đáy' : '⤓  Không bám';
   if (follow) bottom();
 };
 $('#grep').onclick = () => {
   $('#tools').classList.toggle('show');
+  $('#grep').classList.toggle('on', $('#tools').classList.contains('show'));
   if ($('#tools').classList.contains('show')) $('#q').focus();
   else { $('#q').value = ''; grep = null; redraw(); }
 };
