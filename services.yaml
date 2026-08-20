@@ -100,6 +100,11 @@ services:
         - "{json.device}"
         - "{json.model}"
         - "{json.cuda_memory.allocated_gb} GB"
+      series:
+        # VRAM do torch cấp phát — đối chiếu với nvidia-smi per-process sẽ thấy
+        # phần chênh là CUDA context + cuBLAS/cuDNN workspace
+        - { name: torch_alloc_gb, value: json.cuda_memory.allocated_gb }
+        - { name: torch_reserved_gb, value: json.cuda_memory.reserved_gb }
     log_metrics:
       wav_paths:
         - /transcribe
@@ -241,6 +246,15 @@ services:
         - "intents={json.cache.enabled_intent_count}"
         - "embed={json.embed.latency_ms}ms"
         - "db={json.db.status}"
+      # Số đo cho tab biểu đồ. `valid_if` bắt buộc với latency: khi không kết
+      # nối được, service vẫn trả latency_ms (là thời gian bị từ chối) — vẽ số
+      # đó lên chart là nói dối, phải để khoảng trống.
+      series:
+        - { name: embed_latency, value: json.embed.latency_ms, valid_if: json.embed.reachable }
+        - { name: chat_latency,  value: json.chat.latency_ms,  valid_if: json.chat.reachable }
+        - { name: asr_latency,   value: json.asr.latency_ms,   valid_if: json.asr.reachable }
+        - { name: db_latency,    value: json.db.latency_ms,    valid_if: json.db.status == 'ok' }
+        - { name: intents,       value: json.cache.enabled_intent_count }
     actions:
       - id: reindex
         label: Reindex + Restart

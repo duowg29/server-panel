@@ -56,9 +56,11 @@ class ServiceStatus:
 
 
 class HealthPoller:
-    def __init__(self, cfg: Config, sup: Supervisor) -> None:
+    def __init__(self, cfg: Config, sup: Supervisor, store=None) -> None:
         self.cfg = cfg
         self.sup = sup
+        #: SeriesStore để lưu latency thành time-series (None = không lưu)
+        self.store = store
         self.snapshot: dict[str, ServiceStatus] = {
             sid: ServiceStatus(id=sid) for sid in cfg.services
         }
@@ -159,6 +161,16 @@ class HealthPoller:
                 st.error = type(e).__name__
 
         st.state = self._classify(svc, payload, st)
+
+        if self.store is not None:
+            # latency probe: chỉ ghi khi kết nối được, lỗi → None để đường đứt
+            self.store.push(
+                f"probe.{svc.id}.latency_ms",
+                st.latency_ms if st.error is None and st.latency_ms is not None else None,
+                now,
+            )
+            self._push_declared_series(svc, payload, now)
+
         if payload is not None:
             st.raw = payload if isinstance(payload, dict) else {"value": payload}
             st.detail = self._render_detail(svc, payload)
@@ -202,6 +214,21 @@ class HealthPoller:
             st.missing = missing
             return "NO_ENV"
         return "OFFLINE"
+
+    def _push_declared_series(self, svc: Service, payload: Any, now: float) -> None:
+        """Đẩy các số đo khai báo ở `health.series` trong services.yaml."""
+        if not svc.health or not svc.health.series:
+            return
+        for spec in svc.health.series:
+            key = f"svc.{svc.id}.{spec.name}"
+            if payload is None:
+                self.store.push(key, None, now)
+                continue
+            if spec.valid_if and not resolve_path_expr(spec.valid_if, payload):
+                self.store.push(key, None, now)   # bẫy số 1: unreachable → khoảng trống
+                continue
+            v = resolve_path_expr(spec.value, payload)
+            self.store.push(key, v if isinstance(v, (int, float)) else None, now)
 
     def _missing(self, svc: Service) -> list[str]:
         now = time.time()

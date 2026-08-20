@@ -72,11 +72,25 @@ class StopSpec:
 
 
 @dataclass
+class HealthSeries:
+    """Một số đo trích từ JSON health, đẩy vào SeriesStore.
+
+    `valid_if` là chỗ DUY NHẤT xử lý bẫy "unreachable vẫn trả số timeout":
+    Intent API trả `chat.latency_ms=476` kèm `chat.reachable=false` — 476 đó là
+    thời gian bị từ chối, vẽ lên chart là nói dối.
+    """
+    name: str
+    value: str
+    valid_if: str | None = None
+
+
+@dataclass
 class HealthSpec:
     url: str | None = None
     rules: dict[str, str] = field(default_factory=dict)
     detail: list[str] = field(default_factory=list)
     public_url_from: str | None = None
+    series: list[HealthSeries] = field(default_factory=list)
 
 
 @dataclass
@@ -318,6 +332,15 @@ def _parse_service(d: dict[str, Any]) -> Service:
             compile_rule(expr)  # fail-fast
         if health.public_url_from:
             compile_rule(health.public_url_from)
+        for sd in (h.get("series") or []):
+            if not sd.get("name") or not sd.get("value"):
+                raise ConfigError(f"[{d['id']}] health.series cần `name` và `value`")
+            compile_rule(sd["value"])            # fail-fast lúc load
+            if sd.get("valid_if"):
+                compile_rule(sd["valid_if"])
+            health.series.append(HealthSeries(
+                name=sd["name"], value=sd["value"], valid_if=sd.get("valid_if"),
+            ))
 
     return Service(
         id=d["id"], name=d["name"], group=d["group"], kind=d.get("kind", "process"),

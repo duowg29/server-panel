@@ -30,6 +30,8 @@ from .config import Config, ConfigError, mask_env
 from .health import HealthPoller
 from .logs import LogRegistry, backfill
 from .metrics import MetricsCollector
+from .sampler import Sampler
+from .series import SeriesStore
 from .supervisor import Supervisor, SupervisorError, _pgrep
 
 logging.basicConfig(
@@ -65,8 +67,10 @@ async def lifespan(app: FastAPI):
     cfg = cfgmod.load(path)
 
     sup = Supervisor(cfg)
-    poller = HealthPoller(cfg, sup)
+    store = SeriesStore()
+    poller = HealthPoller(cfg, sup, store)
     metrics = MetricsCollector(cfg)
+    sampler = Sampler(cfg, sup, store, metrics)
 
     cfg.log_dir.mkdir(parents=True, exist_ok=True)
     sup.reconcile()
@@ -77,6 +81,8 @@ async def lifespan(app: FastAPI):
     app.state.metrics = metrics
     app.state.logs = LogRegistry()
     app.state.status_subs = set()
+    app.state.store = store
+    app.state.sampler = sampler
 
     tasks = [
         asyncio.create_task(poller.run(), name="health"),
@@ -84,6 +90,7 @@ async def lifespan(app: FastAPI):
         asyncio.create_task(metrics.run_logs(), name="logscan"),
         asyncio.create_task(_broadcast_loop(app), name="broadcast"),
         asyncio.create_task(_job_watch_loop(app), name="jobwatch"),
+        asyncio.create_task(sampler.run(), name="sampler"),
     ]
     log.info("panel sẵn sàng: http://127.0.0.1:%s", PORT)
     try:
@@ -249,6 +256,7 @@ async def api_config_reload(request: Request):
     app_.state.sup.rebind(cfg)
     app_.state.poller.rebind(cfg)
     app_.state.metrics.rebind(cfg)
+    app_.state.sampler.rebind(cfg)
     app_.state.sup.reconcile()
     return {"ok": True, "services": len(cfg.services)}
 
@@ -257,6 +265,55 @@ async def api_config_reload(request: Request):
 @app.get("/api/status")
 async def api_status(request: Request):
     return _status_payload(request.app)
+
+
+@app.get("/api/series/meta")
+async def api_series_meta(request: Request):
+    """Thông tin tĩnh + danh sách series. Tab biểu đồ gọi 1 lần khi mở."""
+    app_ = request.app
+    store: SeriesStore = app_.state.store
+    sampler: Sampler = app_.state.sampler
+    poller: HealthPoller = app_.state.poller
+    cfg: Config = app_.state.cfg
+    hidden = {g.id for g in cfg.groups if g.hidden}
+    return {
+        **{k: v for k, v in store.meta.items()},
+        "gpu_error": sampler.gpu_error,
+        "series": store.names(),
+        "stats": store.stats(),
+        "services": [
+            {"id": s.id, "name": s.name, "state": poller.state_of(s.id),
+             "pid": (poller.snapshot.get(s.id).pid if poller.snapshot.get(s.id) else None)}
+            for s in cfg.services.values()
+            if s.kind != "composite" and s.group not in hidden
+        ],
+    }
+
+
+@app.get("/api/series")
+async def api_series(
+    request: Request,
+    window_s: float = Query(600.0, ge=30, le=600),
+    buckets: int = Query(120, ge=10, le=600),
+    names: str | None = Query(None, description="lọc theo tiền tố, cách nhau bởi dấu phẩy"),
+):
+    """Dữ liệu biểu đồ. Tab mở mới poll — không nhồi vào WebSocket của trang chính."""
+    store: SeriesStore = request.app.state.store
+    # báo cho sampler biết tab đang mở → bật nhánh ngrok-requests
+    request.app.state.sampler.note_detail_interest()
+    wanted = None
+    if names:
+        prefixes = tuple(x.strip() for x in names.split(",") if x.strip())
+        wanted = [n for n in store.names() if n.startswith(prefixes)]
+    return store.resample(wanted, window_s=window_s, buckets=buckets)
+
+
+@app.get("/api/requests/recent")
+async def api_requests_recent(request: Request, n: int = Query(200, ge=1, le=500)):
+    """Từng request đi qua ngrok — cho biểu đồ scatter."""
+    sampler: Sampler = request.app.state.sampler
+    request.app.state.sampler.note_detail_interest()
+    return sampler.ngrok_requests[-n:]
 
 
 @app.get("/api/metrics")
