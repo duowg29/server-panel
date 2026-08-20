@@ -29,7 +29,7 @@ from .config import Config, ConfigError, mask_env
 from .health import HealthPoller
 from .logs import LogRegistry, backfill
 from .metrics import MetricsCollector
-from .supervisor import Supervisor, SupervisorError
+from .supervisor import Supervisor, SupervisorError, _pgrep
 
 logging.basicConfig(
     level=os.environ.get("PANEL_LOG_LEVEL", "INFO"),
@@ -152,10 +152,16 @@ def _status_payload(app: FastAPI) -> dict[str, Any]:
     poller: HealthPoller = app.state.poller
     metrics: MetricsCollector = app.state.metrics
     sup: Supervisor = app.state.sup
+    services = poller.as_dict()
+    # UI dùng chung kết luận này thay vì tự suy từ state (state không phân biệt
+    # được hai service dùng chung port)
+    for sid, entry in services.items():
+        svc = app.state.cfg.services.get(sid)
+        entry["blocked_by"] = _blocked_by(app, svc) if svc else []
     return {
         "type": "status",
         "ts": time.time(),
-        "services": poller.as_dict(),
+        "services": services,
         "public_url": poller.public_url(),
         "metrics": metrics.series(window_s=300.0),
         "jobs": [
@@ -260,6 +266,30 @@ def _svc_or_404(request: Request, svc_id: str):
     if svc_id not in cfg.services:
         raise HTTPException(404, f"không có service {svc_id!r}")
     return cfg.services[svc_id]
+
+
+def _really_running(app_: FastAPI, svc_id: str) -> bool:
+    """Service này CÓ THẬT đang chạy không.
+
+    Chỉ nhìn health là không đủ: hybrid và vLLM dùng chung port 8001/8002/8088,
+    nên cpu_inf ONLINE làm health của vllm_embed cũng 200 và panel tưởng cả
+    stack vLLM đang chạy. Phải xác nhận có process thật.
+    """
+    poller: HealthPoller = app_.state.poller
+    sup: Supervisor = app_.state.sup
+    if poller.state_of(svc_id) not in {"ONLINE", "DEGRADED", "STARTING"}:
+        return False
+    if sup.state(svc_id).alive:
+        return True
+    svc = app_.state.cfg.services.get(svc_id)
+    if svc and svc.stop and svc.stop.mode == "pkill" and svc.stop.pattern:
+        return bool(_pgrep(svc.stop.pattern))
+    # không có cách xác minh process → tin health
+    return True
+
+
+def _blocked_by(app_: FastAPI, svc) -> list[str]:
+    return [c for c in svc.conflicts_with if _really_running(app_, c)]
 
 
 def _seq_log(job_log: Path, text: str) -> None:
@@ -369,8 +399,7 @@ async def api_start(request: Request, svc_id: str):
     poller: HealthPoller = request.app.state.poller
 
     # chặn khi stack đối lập đang chạy (2 stack đụng port 8001/8002/8088)
-    conflicts = [c for c in svc.conflicts_with
-                 if poller.state_of(c) in {"ONLINE", "DEGRADED", "STARTING"}]
+    conflicts = _blocked_by(request.app, svc)
     if conflicts:
         raise HTTPException(
             409,

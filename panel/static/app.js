@@ -153,8 +153,9 @@ function renderCard(svc) {
   const running = ['ONLINE', 'DEGRADED', 'STARTING'].includes(state);
 
   const unmet = (svc.depends_on || []).filter(d => stateOf(d) !== 'ONLINE');
-  const conflicts = (svc.conflicts_with || [])
-    .filter(c => ['ONLINE', 'DEGRADED', 'STARTING'].includes(stateOf(c)));
+  // server tự tính (nó xác minh có process thật, không chỉ nhìn health —
+  // hybrid và vLLM dùng chung port nên health không phân biệt được)
+  const conflicts = st.blocked_by || [];
 
   if (svc.can_start) {
     const b = el('button', 'go', 'Start');
