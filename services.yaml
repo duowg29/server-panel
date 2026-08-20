@@ -149,13 +149,20 @@ services:
         label: Tải model
         type: shell
         cwd: "{root}"
+        # KHÔNG dùng scripts/download_models.sh: nó tải thêm Qwen3-1.7B bản đầy
+        # đủ (~3.4GB) mà hybrid không dùng — chat chạy bằng GGUF.
+        # `hf` lấy từ .venv-cpu-inf (sentence-transformers kéo huggingface_hub về).
         shell: |
           set -e
-          echo "== embed 0.6B =="
-          bash scripts/download_models.sh -Profile hybrid_speech_asr
-          echo "== chat GGUF =="
+          export PATH="$PWD/.venv-cpu-inf/bin:$PATH"
+          echo "== [1/2] embed Qwen3-Embedding-0.6B =="
+          hf download Qwen/Qwen3-Embedding-0.6B --local-dir models/qwen3-embedding-0.6b
+          echo
+          echo "== [2/2] chat Qwen3-1.7B-Q4_K_M.gguf =="
           .venv-cpu-inf/bin/python scripts/download_chat_gguf.py
-        confirm: "Tải model embed 0.6B + chat GGUF (~2GB)?<br>Cần đã `hf auth login` trước."
+          echo
+          echo "Xong. Bấm Start ở card này."
+        confirm: "Tải model embed 0.6B + chat GGUF (~2GB)?<br>Cần dựng venv trước."
         show_output: modal
 
   - id: gpu_chat
