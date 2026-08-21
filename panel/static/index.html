@@ -28,22 +28,14 @@
 
 <div class="statusstrip" id="strip"></div>
 
-<nav class="tabs">
-  <button data-tab="ops" class="on">▤  Điều khiển</button>
-  <button data-tab="charts">◫  Biểu đồ</button>
-</nav>
 
-<section id="tab-ops"><main class="shell">
+<div id="kpi-row" class="kpirow"></div>
+
+<main class="shell">
   <div class="col-left">
     <div id="groups"></div>
 
-    <div class="gotocharts">
-      <div>
-        <b>Biểu đồ chi tiết</b> — VRAM theo tiến trình · độ trễ từng phụ thuộc ·
-        CPU/RAM mỗi service · request qua ngrok · nút bắn tải thử
-      </div>
-      <button onclick="showTab('charts')">◫  Mở tab Biểu đồ</button>
-    </div>
+    <div id="charts-body"></div>
 
   </div>
 
@@ -57,11 +49,8 @@
       </div>
     </div>
   </aside>
-</main></section>
+</main>
 
-<section id="tab-charts" hidden>
-  <div id="charts-body"></div>
-</section>
 
 <div id="toasts"></div>
 

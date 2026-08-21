@@ -7,6 +7,14 @@
    tab ra sẽ thấy 10 phút trống, hỏng hẳn mục đích "xem lại lúc nãy vì sao chậm".
 */
 
+/** Các số PHẲNG (luồng, fd, uptime, I/O) không đáng một biểu đồ riêng —
+    dồn hết vào bảng tiến trình, xem một cái là đủ. */
+function fmtDurMin(sec) {
+  if (sec == null) return '—';
+  const m = Math.floor(sec / 60);
+  return m < 60 ? m + 'p' : Math.floor(m / 60) + 'g' + (m % 60) + 'p';
+}
+
 const ChartsTab = {
   timer: null,
   meta: null,
@@ -50,57 +58,51 @@ const ChartsTab = {
          <div class="chart__body"></div>
        </div>`;
 
+    // KPI nằm riêng ở đầu trang (full width) — liếc là thấy
+    const kpiRow = document.getElementById('kpi-row');
+    if (kpiRow) {
+      kpiRow.innerHTML = [
+        tile('gpu', 'GPU', 'mức tải'),
+        tile('vram', 'VRAM', 'đã dùng'),
+        tile('cpu', 'CPU máy', `${this.meta.nproc || '?'} nhân`),
+        tile('ram', 'RAM máy', 'đã dùng'),
+        tile('req', 'Request', 'mỗi phút'),
+        tile('lat', 'Intent API', 'độ trễ probe'),
+      ].join('');
+    }
+
+    // Chỉ giữ biểu đồ CÓ BIẾN ĐỘNG và trả lời được một câu hỏi cụ thể.
+    // Đã bỏ: xung nhịp GPU, VRAM theo tiến trình, I/O đĩa, số luồng, số fd,
+    // bị-cướp-CPU, load average, RAM toàn máy, kết nối ngrok, uptime,
+    // request-theo-service — đo thật thì phẳng lì hoặc trùng thông tin với
+    // bảng tiến trình / ô KPI.
     root.innerHTML = `
-      <div class="kpirow">
-        ${tile('gpu', 'GPU', 'mức tải')}
-        ${tile('vram', 'VRAM', 'đã dùng')}
-        ${tile('cpu', 'CPU máy', `${this.meta.nproc || '?'} nhân`)}
-        ${tile('ram', 'RAM máy', 'đã dùng')}
-        ${tile('req', 'Request', 'mỗi phút')}
-        ${tile('lat', 'Intent API', 'độ trễ probe')}
-      </div>
-
-      <section class="sec"><h2>GPU</h2>
+      <section class="sec"><h2>Sức khoẻ &amp; độ trễ</h2>
         <div class="chartgrid">
-          ${chart('gpu_time', 'GPU theo thời gian', 'mức tải · bộ nhớ · nhiệt độ · điện')}
-          ${chart('vram_split', 'VRAM đang chia cho ai', 'ngay lúc này')}
-          ${chart('vram_time', 'VRAM theo tiến trình', '')}
-          ${chart('gpu_clock', 'Xung nhịp GPU', 'MHz')}
-        </div>
-      </section>
-
-      <section class="sec"><h2>Độ trễ</h2>
-        <div class="chartgrid">
-          ${chart('lat_dep', 'Phụ thuộc của Intent API', 'đường đứt = không kết nối được')}
+          ${chart('lat_dep', 'Phụ thuộc của Intent API',
+                  'đường đứt = không kết nối được, không phải 0ms')}
           ${chart('lat_probe', 'Độ trễ probe từng service', '')}
-          ${chart('ngrok_p', 'ngrok phân vị', 'p50 · p90 · p95 · p99')}
-          ${chart('ngrok_req', 'Từng request qua ngrok', 'màu theo mã trạng thái')}
+          ${chart('gpu_time', 'GPU theo thời gian', 'mức tải · bộ nhớ · nhiệt · điện')}
+          ${chart('vram_split', 'VRAM đang chia cho ai', 'ngay lúc này')}
         </div>
       </section>
 
-      <section class="sec"><h2>Tài nguyên theo tiến trình</h2>
+      <section class="sec"><h2>Tài nguyên &amp; tải</h2>
         <div class="chartgrid">
           ${chart('proc_cpu', 'CPU từng service', '% của một nhân, có thể vượt 100')}
-          ${chart('proc_ram', 'RAM từng service', 'RSS cộng lại ≠ RAM máy: thư viện dùng chung bị tính trùng')}
-          ${chart('proc_io', 'Đọc/ghi đĩa', '')}
-          ${chart('proc_thread', 'Số luồng', '')}
-          ${chart('proc_ctx', 'Bị cướp CPU', 'lần/giây — cao = đang tranh CPU với tiến trình khác')}
-          ${chart('proc_fd', 'File đang mở', 'tăng đều mà không giảm = rò fd')}
+          ${chart('proc_ram', 'RAM từng service',
+                  'RSS cộng lại ≠ RAM máy: thư viện dùng chung bị tính trùng')}
+          ${chart('req_rpm', 'Request mỗi phút', 'đã loại probe của panel')}
+          ${chart('top_path', 'Endpoint gọi nhiều nhất', '5 phút gần đây')}
         </div>
         <div class="chart wide" id="ch-proctable"><h3>Bảng tiến trình</h3>
           <div class="chart__body"></div></div>
       </section>
 
-      <section class="sec"><h2>Tải nghiệp vụ</h2>
+      <section class="sec"><h2>Qua ngrok</h2>
         <div class="chartgrid">
-          ${chart('req_rpm', 'Request mỗi phút', 'đã loại probe của panel')}
-          ${chart('req_svc', 'Request theo service', '')}
-          ${chart('host_load', 'Load average', '1 · 5 · 15 phút')}
-          ${chart('host_mem', 'RAM toàn máy', '')}
-          ${chart('req_err', 'Tỉ lệ lỗi', '4xx = client gọi sai · 5xx = server hỏng')}
-          ${chart('top_path', 'Endpoint gọi nhiều nhất', '5 phút gần đây')}
-          ${chart('ngrok_conns', 'Kết nối ngrok', 'đang mở · lần/phút')}
-          ${chart('uptime', 'Thời gian chạy', 'sụt về 0 = service vừa khởi động lại')}
+          ${chart('ngrok_p', 'Phân vị độ trễ', 'p50 · p90 · p95 · p99')}
+          ${chart('ngrok_req', 'Từng request', 'màu theo mã trạng thái')}
         </div>
       </section>
 
@@ -109,13 +111,13 @@ const ChartsTab = {
           <div class="loadform">
             <label>Hồ sơ
               <select id="lt-profile">
-                <option value="intent">intent — POST /intent (ép 1 luồng)</option>
-                <option value="transcribe">transcribe — POST /transcribe</option>
-                <option value="assess">assess — POST /api/speech/assess</option>
+                <option value="assess">assess — chấm phát âm (có cả giờ server đo)</option>
+                <option value="transcribe">transcribe — nhận dạng</option>
+                <option value="intent">intent — nhận ý định (ép 1 luồng)</option>
                 <option value="gateway">gateway — qua :8090</option>
               </select>
             </label>
-            <label>Số request <input id="lt-n" type="number" value="10" min="1" max="50"></label>
+            <label>Số request <input id="lt-n" type="number" value="8" min="1" max="50"></label>
             <label>Đồng thời <input id="lt-c" type="number" value="1" min="1" max="4"></label>
             <button id="lt-go" class="go">▶  Bắn</button>
             <button id="lt-cancel" class="stop" disabled>■  Huỷ</button>
@@ -128,7 +130,7 @@ const ChartsTab = {
       </section>
 
       <div class="chartfoot">
-        <span>Cửa sổ thời gian:</span>
+        <span>Cửa sổ:</span>
         <button data-w="60" class="cw">1 phút</button>
         <button data-w="300" class="cw on">5 phút</button>
         <button data-w="600" class="cw">10 phút</button>
@@ -224,21 +226,6 @@ const ChartsTab = {
       { label: 'tiến trình khác', value: others, color: 'var(--amber)' },
     ], { total: gpuTotal, unit: 'MB' });
 
-    stackedArea(body('vram_time'), {
-      ...base, unit: 'MB',
-      series: alive.filter(s => (S[`gpuproc.${s}.vram_mb`] || []).some(v => v)).map(s => ({
-        label: s, data: g(`gpuproc.${s}.vram_mb`),
-      })),
-    });
-
-    lineMulti(body('gpu_clock'), {
-      ...base, unit: '',
-      series: [
-        { label: 'SM', data: g('gpu.0.clock_sm'), color: 'var(--cyan)' },
-        { label: 'bộ nhớ', data: g('gpu.0.clock_mem'), color: 'var(--violet)' },
-      ],
-    });
-
     // ── Độ trễ ──
     lineMulti(body('lat_dep'), {
       ...base, unit: 'ms',
@@ -282,26 +269,6 @@ const ChartsTab = {
       ...base, unit: 'MB',
       series: alive.map(s => ({ label: s, data: g(`proc.${s}.rss_mb`) })),
     });
-    lineMulti(body('proc_io'), {
-      ...base, unit: 'B',
-      series: alive.flatMap(s => [
-        { label: s + ' đọc', data: g(`proc.${s}.io_read_bps`) },
-        { label: s + ' ghi', data: g(`proc.${s}.io_write_bps`), dash: '3 3' },
-      ]),
-    });
-    lineMulti(body('proc_thread'), {
-      ...base, unit: '',
-      series: alive.map(s => ({ label: s, data: g(`proc.${s}.threads`) })),
-    });
-
-    lineMulti(body('proc_ctx'), {
-      ...base, unit: '/s',
-      series: alive.map(s => ({ label: s, data: g(`proc.${s}.ctxsw_forced_ps`) })),
-    });
-    lineMulti(body('proc_fd'), {
-      ...base, unit: '',
-      series: alive.map(s => ({ label: s, data: g(`proc.${s}.fds`) })),
-    });
 
     this.procTable(S, last, svcs);
 
@@ -310,51 +277,11 @@ const ChartsTab = {
       ...base, unit: '',
       series: [
         { label: 'request/phút', data: g('req.rpm'), color: 'var(--cyan)' },
+        { label: 'lỗi 4xx', data: g('req.err4xx_rpm'), color: 'var(--amber)' },
         { label: 'lỗi 5xx', data: g('req.err_rpm'), color: 'var(--red)' },
       ],
     });
-    const bySvc = svcs.map(s => [s, Math.round(
-      (S[`req.${s}.rpm`] || []).reduce((a, v) => a + (v || 0), 0))]).filter(r => r[1] > 0);
-    barsH(body('req_svc'), bySvc.sort((a, b) => b[1] - a[1]), null);
-
-    lineMulti(body('host_load'), {
-      ...base, unit: '',
-      series: [
-        { label: '1 phút', data: g('host.load1'), color: 'var(--cyan)' },
-        { label: '5 phút', data: g('host.load5'), color: 'var(--green)' },
-        { label: '15 phút', data: g('host.load15'), color: 'var(--fg-dim)' },
-      ],
-    });
-    stackedArea(body('host_mem'), {
-      ...base, unit: 'MB',
-      series: [
-        { label: 'đã dùng', data: g('host.mem_used_mb'), color: 'var(--amber)' },
-        { label: 'còn trống', data: g('host.mem_avail_mb'), color: 'var(--line-hot)' },
-      ],
-    });
-
-    lineMulti(body('req_err'), {
-      ...base, unit: '/phút',
-      series: [
-        { label: '5xx server hỏng', data: g('req.err_rpm'), color: 'var(--red)' },
-        { label: '4xx gọi sai', data: g('req.err4xx_rpm'), color: 'var(--amber)' },
-      ],
-    });
     barsH(body('top_path'), (this.meta && this.meta.top_paths) || [], null);
-    lineMulti(body('ngrok_conns'), {
-      ...base, unit: '',
-      series: [
-        { label: 'kết nối đang mở', data: g('ngrok.conns'), color: 'var(--cyan)' },
-        { label: 'request/phút', data: g('ngrok.rpm'), color: 'var(--green)' },
-      ],
-    });
-    lineMulti(body('uptime'), {
-      ...base, unit: 'phút',
-      series: alive.map(s => ({
-        label: s,
-        data: (g(`proc.${s}.uptime_s`) || []).map(v => v == null ? null : v / 60),
-      })),
-    });
 
     LoadTest.render(base);
 
@@ -383,6 +310,7 @@ const ChartsTab = {
         <td>${fmtNum(last(`gpuproc.${s}.vram_mb`), 'MB')}</td>
         <td>${fmtNum(last(`proc.${s}.threads`), '')}</td>
         <td>${fmtNum(last(`proc.${s}.fds`), '')}</td>
+        <td>${fmtDurMin(last(`proc.${s}.uptime_s`))}</td>
         <td>${fmtBytes(last(`proc.${s}.io_read_bps`))}</td>
         <td>${fmtBytes(last(`proc.${s}.io_write_bps`))}</td></tr>`;
     }).filter(Boolean);
@@ -390,7 +318,7 @@ const ChartsTab = {
     if (el) {
       el.innerHTML = `<table class="ptable">
         <thead><tr><th>service</th><th>PID</th><th>CPU</th><th>RAM</th><th>VRAM</th>
-        <th>luồng</th><th>fd</th><th>đọc</th><th>ghi</th></tr></thead>
+        <th>luồng</th><th>fd</th><th>chạy được</th><th>đọc</th><th>ghi</th></tr></thead>
         <tbody>${rows.join('')}</tbody></table>`;
     }
   },

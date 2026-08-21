@@ -659,12 +659,15 @@ button.big    { min-height: 38px; font-size: 13.5px; padding: .4rem 1.1rem; }
 }
 
 /* ══ Khu biểu đồ ════════════════════════════════════════════════════ */
-#charts-body { padding: 1.1rem; display: flex; flex-direction: column; gap: 1.5rem; }
+/* Biểu đồ nằm THẲNG trong cột trái, không tab — nên bỏ padding riêng */
+#charts-body { display: flex; flex-direction: column; gap: 1.4rem; }
 
+/* Hàng KPI full width ngay dưới thanh trạng thái: liếc là thấy, không phải cuộn */
 .kpirow {
   display: grid;
-  grid-template-columns: repeat(auto-fit, minmax(11rem, 1fr));
-  gap: .7rem;
+  grid-template-columns: repeat(auto-fit, minmax(10rem, 1fr));
+  gap: .6rem;
+  padding: .9rem 1.1rem 0;
 }
 .kpi {
   background: var(--bg-panel);
@@ -696,8 +699,8 @@ button.big    { min-height: 38px; font-size: 13.5px; padding: .4rem 1.1rem; }
 
 .chartgrid {
   display: grid;
-  grid-template-columns: repeat(auto-fit, minmax(27rem, 1fr));
-  gap: .8rem;
+  grid-template-columns: repeat(auto-fit, minmax(20rem, 1fr));
+  gap: .7rem;
 }
 .chart {
   background: var(--bg-panel);
@@ -790,7 +793,8 @@ button.big    { min-height: 38px; font-size: 13.5px; padding: .4rem 1.1rem; }
 .charttip .tot { border-top: 1px solid var(--line); margin-top: .3rem; padding-top: .25rem; }
 
 /* bảng tiến trình */
-.ptable { width: 100%; border-collapse: collapse; font-size: 12px; }
+.chart__body:has(.ptable) { overflow-x: auto; }
+.ptable { width: 100%; border-collapse: collapse; font-size: 11.5px; min-width: 34rem; }
 .ptable th {
   text-align: left;
   font-size: 10.5px;
@@ -842,7 +846,8 @@ button.big    { min-height: 38px; font-size: 13.5px; padding: .4rem 1.1rem; }
   padding: .25rem .5rem;
   border-radius: var(--r-sm);
 }
-.loadform input { width: 6rem; }
+.loadform input { width: 5rem; }
+.loadform #lt-status { flex: 1 0 100%; }
 .loadform select:focus, .loadform input:focus { outline: none; border-color: var(--cyan); }
 .sub { font-size: 12px; color: var(--fg-dim); }
 .sub b { color: var(--fg-bright); }
