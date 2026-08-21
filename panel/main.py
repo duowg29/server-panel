@@ -28,6 +28,7 @@ from fastapi.staticfiles import StaticFiles
 from . import config as cfgmod
 from .config import Config, ConfigError, mask_env
 from .health import HealthPoller
+from .loadgen import LoadGen
 from .logs import LogRegistry, backfill
 from .metrics import MetricsCollector
 from .sampler import Sampler
@@ -71,6 +72,7 @@ async def lifespan(app: FastAPI):
     poller = HealthPoller(cfg, sup, store)
     metrics = MetricsCollector(cfg)
     sampler = Sampler(cfg, sup, store, metrics)
+    loadgen = LoadGen(cfg, store, poller)
 
     cfg.log_dir.mkdir(parents=True, exist_ok=True)
     sup.reconcile()
@@ -83,6 +85,7 @@ async def lifespan(app: FastAPI):
     app.state.status_subs = set()
     app.state.store = store
     app.state.sampler = sampler
+    app.state.loadgen = loadgen
 
     tasks = [
         asyncio.create_task(poller.run(), name="health"),
@@ -257,6 +260,7 @@ async def api_config_reload(request: Request):
     app_.state.poller.rebind(cfg)
     app_.state.metrics.rebind(cfg)
     app_.state.sampler.rebind(cfg)
+    app_.state.loadgen.rebind(cfg)
     app_.state.sup.reconcile()
     return {"ok": True, "services": len(cfg.services)}
 
@@ -314,6 +318,37 @@ async def api_requests_recent(request: Request, n: int = Query(200, ge=1, le=500
     sampler: Sampler = request.app.state.sampler
     request.app.state.sampler.note_detail_interest()
     return sampler.ngrok_requests[-n:]
+
+
+@app.post("/api/loadtest")
+async def api_loadtest(request: Request):
+    """Bắn tải THẬT vào service đang chạy — không giả lập số liệu.
+
+    Body: {profile, n, concurrency}. Chỉ nhận tên hồ sơ khai sẵn trong
+    loadgen.PROFILES, không nhận URL hay lệnh từ client.
+    """
+    body = await request.json()
+    lg: LoadGen = request.app.state.loadgen
+    try:
+        return await lg.start(
+            profile=str(body.get("profile", "")),
+            n=int(body.get("n", 10)),
+            concurrency=int(body.get("concurrency", 2)),
+        )
+    except ValueError as e:
+        raise HTTPException(400, str(e)) from None
+    except RuntimeError as e:
+        raise HTTPException(409, str(e)) from None
+
+
+@app.get("/api/loadtest/status")
+async def api_loadtest_status(request: Request):
+    return request.app.state.loadgen.status()
+
+
+@app.post("/api/loadtest/cancel")
+async def api_loadtest_cancel(request: Request):
+    return request.app.state.loadgen.cancel()
 
 
 @app.get("/api/metrics")

@@ -28,7 +28,12 @@
 
 <div class="statusstrip" id="strip"></div>
 
-<main class="shell">
+<nav class="tabs">
+  <button data-tab="ops" class="on">▤  Điều khiển</button>
+  <button data-tab="charts">◫  Biểu đồ</button>
+</nav>
+
+<section id="tab-ops"><main class="shell">
   <div class="col-left">
     <div id="groups"></div>
 
@@ -73,7 +78,11 @@
       </div>
     </div>
   </aside>
-</main>
+</main></section>
+
+<section id="tab-charts" hidden>
+  <div id="charts-body"></div>
+</section>
 
 <div id="toasts"></div>
 
@@ -93,5 +102,6 @@
 
 <script src="/static/charts.js"></script>
 <script src="/static/app.js"></script>
+<script src="/static/charts_tab.js"></script>
 </body>
 </html>

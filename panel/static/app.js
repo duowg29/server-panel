@@ -684,3 +684,29 @@ document.querySelectorAll('button.win').forEach(b => {
 
 setInterval(renderStrip, 1000);
 loadConfig().then(connect).catch(e => toast('không tải được config: ' + e.message, 'err'));
+
+
+// ── Chuyển tab ────────────────────────────────────────────────────────
+// Không framework. Tab đóng thì ChartsTab.stop() — biểu đồ không vẽ, không
+// fetch. Sampler ở backend VẪN chạy, nếu không mở tab ra sẽ thấy 10 phút trống.
+function showTab(name) {
+  document.querySelectorAll('.tabs button')
+    .forEach(b => b.classList.toggle('on', b.dataset.tab === name));
+  document.querySelectorAll('section[id^="tab-"]')
+    .forEach(s => { s.hidden = s.id !== 'tab-' + name; });
+  if (location.hash.slice(1) !== name) location.hash = name;
+  if (typeof ChartsTab === 'undefined') return;
+  name === 'charts' ? ChartsTab.start() : ChartsTab.stop();
+}
+
+document.querySelectorAll('.tabs button')
+  .forEach(b => { b.onclick = () => showTab(b.dataset.tab); });
+window.addEventListener('hashchange',
+  () => showTab(location.hash.slice(1) || 'ops'));
+// Trình duyệt ẩn tab → dừng vẽ, đỡ tốn CPU khi để nền
+document.addEventListener('visibilitychange', () => {
+  if (typeof ChartsTab === 'undefined') return;
+  if (document.hidden) ChartsTab.stop();
+  else if (location.hash === '#charts') ChartsTab.start();
+});
+showTab(location.hash.slice(1) || 'ops');
