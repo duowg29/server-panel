@@ -333,7 +333,11 @@ services:
   # Model/GPU lấy theo profile trong {root}/.env (INFERENCE_DEPLOY_PROFILE).
   - id: vllm_all
     name: vLLM Stack (4 service)
-    group: composite
+    # Thuộc nhóm vllm (đang ẩn) chứ KHÔNG phải composite: card này báo
+    # "2/4 online" sai sự thật — vllm_embed và intent_vllm probe trúng
+    # cpu_inf :8001 và intent :8088 của stack hybrid đang chạy, chứ vLLM
+    # không hề chạy. Bỏ `hidden: true` ở nhóm vllm là hiện lại cả cụm.
+    group: vllm
     kind: composite
     note: Thay cho start_all_gui.sh — embed + chat + ASR + API
     members: [vllm_embed, vllm_chat, asr, intent_vllm]
