@@ -30,11 +30,24 @@ MAX_CONCURRENCY = 4
 MAX_RUN_S = 180.0
 REQ_TIMEOUT_S = 60.0   # assess với large-v3 có thể mất 3-10s
 
+# `max_conc`: trần đồng thời RIÊNG của hồ sơ.
+#
+# intent = 1 KHÔNG PHẢI cho chậm mà vì AN TOÀN: pipeline intent gọi sang chat
+# GGUF trên :8001, mà llama-cpp-python KHÔNG an toàn đa luồng. Bắn 2 luồng đã
+# làm cpu_inference chết thật với
+#   GGML_ASSERT(i1 >= 0 && i1 < ne1) failed  (ggml-cpu/ops.cpp:5134)
+# Đây là giới hạn của llama.cpp, không sửa được từ panel.
 PROFILES = {
-    "intent":     {"svc": "intent",  "url": "http://127.0.0.1:8088/intent"},
-    "transcribe": {"svc": "speech",  "url": "http://127.0.0.1:8000/transcribe"},
-    "assess":     {"svc": "speech",  "url": "http://127.0.0.1:8000/api/speech/assess"},
-    "gateway":    {"svc": "gateway", "url": "http://127.0.0.1:8090/transcribe"},
+    "intent":     {"svc": "intent",  "url": "http://127.0.0.1:8088/intent",
+                   "max_conc": 1,
+                   "warn": "Intent gọi chat GGUF — llama.cpp không chạy song song được, "
+                           "ép về 1 luồng để không làm chết cpu_inference"},
+    "transcribe": {"svc": "speech",  "url": "http://127.0.0.1:8000/transcribe",
+                   "max_conc": 2},
+    "assess":     {"svc": "speech",  "url": "http://127.0.0.1:8000/api/speech/assess",
+                   "max_conc": 2},
+    "gateway":    {"svc": "gateway", "url": "http://127.0.0.1:8090/transcribe",
+                   "max_conc": 2},
 }
 
 
@@ -78,6 +91,7 @@ class LoadGen:
         self.err = 0
         self.profile = ""
         self.results: list[LoadResult] = []
+        self.note: str | None = None
         self._wav_cache: dict[str, bytes] = {}
         self._lock = asyncio.Lock()
 
@@ -101,6 +115,7 @@ class LoadGen:
             "total": self.total, "done": self.done, "ok": self.ok, "err": self.err,
             "p50_ms": _pct(walls, 0.5), "p95_ms": _pct(walls, 0.95),
             "p50_server_ms": _pct(servers, 0.5),
+            "note": self.note,
             "results": [r.to_dict() for r in self.results[-200:]],
         }
 
@@ -116,13 +131,17 @@ class LoadGen:
                 # bắn lúc speech đang tải model 3GB sẽ timeout hàng loạt
                 raise RuntimeError(f"{spec['svc']} đang {state}, chưa bắn được")
             n = max(1, min(int(n), MAX_N))
-            concurrency = max(1, min(int(concurrency), MAX_CONCURRENCY))
+            cap = min(MAX_CONCURRENCY, int(spec.get("max_conc", MAX_CONCURRENCY)))
+            asked = max(1, int(concurrency))
+            concurrency = min(asked, cap)
+            self.note = spec.get("warn") if asked > cap else None
             self.running = True
             self.profile = profile
             self.total, self.done, self.ok, self.err = n, 0, 0, 0
             self.results = []
             self.task = asyncio.create_task(self._run(profile, n, concurrency))
-        return {"ok": True, "profile": profile, "n": n, "concurrency": concurrency}
+        return {"ok": True, "profile": profile, "n": n, "concurrency": concurrency,
+                "note": self.note}
 
     def cancel(self) -> dict[str, Any]:
         if self.task and not self.task.done():

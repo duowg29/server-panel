@@ -109,14 +109,14 @@ const ChartsTab = {
           <div class="loadform">
             <label>Hồ sơ
               <select id="lt-profile">
-                <option value="intent">intent — POST /intent</option>
+                <option value="intent">intent — POST /intent (ép 1 luồng)</option>
                 <option value="transcribe">transcribe — POST /transcribe</option>
                 <option value="assess">assess — POST /api/speech/assess</option>
                 <option value="gateway">gateway — qua :8090</option>
               </select>
             </label>
             <label>Số request <input id="lt-n" type="number" value="10" min="1" max="50"></label>
-            <label>Đồng thời <input id="lt-c" type="number" value="2" min="1" max="4"></label>
+            <label>Đồng thời <input id="lt-c" type="number" value="1" min="1" max="4"></label>
             <button id="lt-go" class="go">▶  Bắn</button>
             <button id="lt-cancel" class="stop" disabled>■  Huỷ</button>
             <span id="lt-status" class="sub"></span>
@@ -421,7 +421,7 @@ const LoadTest = {
       });
       const j = await r.json();
       if (!r.ok) throw new Error(j.detail || 'lỗi');
-      st.textContent = 'đang chạy…';
+      st.textContent = j.note ? '⚠ ' + j.note : 'đang chạy…';
       document.getElementById('lt-go').disabled = true;
       document.getElementById('lt-cancel').disabled = false;
       this.watch();
@@ -439,9 +439,10 @@ const LoadTest = {
       try { j = await (await fetch('/api/loadtest/status')).json(); } catch { return; }
       this.last = j;
       const st = document.getElementById('lt-status');
-      st.textContent = j.running
+      const note = j.note ? ` · ⚠ ${j.note}` : '';
+      st.textContent = (j.running
         ? `đang chạy ${j.done}/${j.total}…`
-        : `xong ${j.done}/${j.total} · ok ${j.ok} · lỗi ${j.err}`;
+        : `xong ${j.done}/${j.total} · ok ${j.ok} · lỗi ${j.err}`) + note;
       if (!j.running) {
         clearInterval(this.poll); this.poll = null;
         document.getElementById('lt-go').disabled = false;
