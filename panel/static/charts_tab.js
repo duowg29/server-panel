@@ -416,3 +416,12 @@ const LoadTest = {
     });
   },
 };
+
+// ── Tự khởi động ────────────────────────────────────────────────────
+// Đặt Ở ĐÂY chứ không ở app.js: app.js nạp trước file này nên lúc đó
+// ChartsTab chưa tồn tại, guard `typeof` sẽ nuốt mất lệnh start.
+if (document.readyState === 'loading') {
+  document.addEventListener('DOMContentLoaded', () => ChartsTab.start());
+} else {
+  ChartsTab.start();
+}

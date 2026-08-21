@@ -679,4 +679,5 @@ document.addEventListener('visibilitychange', () => {
   if (typeof ChartsTab === 'undefined') return;
   document.hidden ? ChartsTab.stop() : ChartsTab.start();
 });
-if (typeof ChartsTab !== 'undefined') ChartsTab.start();
+// KHÔNG start ở đây: app.js nạp TRƯỚC charts_tab.js nên ChartsTab còn undefined.
+// charts_tab.js tự khởi động ở cuối file của nó.
