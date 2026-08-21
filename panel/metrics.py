@@ -27,6 +27,8 @@ log = logging.getLogger("panel.metrics")
 GPU_INTERVAL_S = 2.0
 LOG_INTERVAL_S = 1.0
 RETENTION_S = 600.0
+#: ô nhỏ hơn ngần này thì đồ thị chỉ còn là nhiễu lấy mẫu
+MIN_BUCKET_S = 5.0
 
 #: INFO:     127.0.0.1:57916 - "GET /health HTTP/1.1" 200 OK
 ACCESS_RE = re.compile(
@@ -208,7 +210,10 @@ class MetricsCollector:
     def series(self, window_s: float = 300.0, buckets: int = 60) -> dict:
         now = time.time()
         start = now - window_s
-        bucket_s = max(window_s / buckets, 1.0)
+        # Sàn 5s: tải thật ~0.6 req/giây, chia ô 1 giây thì mỗi ô hoặc 0 hoặc 1
+        # → đồ thị nhảy 0↔120 răng cưa, trông như tải bùng nổ trong khi không có.
+        bucket_s = max(window_s / buckets, MIN_BUCKET_S)
+        buckets = max(2, int(round(window_s / bucket_s)))
 
         counts = [0] * buckets
         errors = [0] * buckets

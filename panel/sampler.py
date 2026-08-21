@@ -76,6 +76,7 @@ class Sampler:
         # trạng thái cho phép tính delta
         self._cpu_prev: dict[str, tuple[float, float, int]] = {}   # svc -> (ts, jiffies, pid)
         self._io_prev: dict[str, tuple[float, float, float, int]] = {}
+        self._ctx_prev: dict[str, tuple[float, float, int]] = {}
         self._host_cpu_prev: tuple[float, float] | None = None      # (busy, total)
         self._ngrok_count_prev: float | None = None
         #: request qua ngrok đã thấy, dedup theo id
@@ -232,6 +233,26 @@ class Sampler:
                 self.store.push(f"proc.{sid}.cpu_pct", None, now)
             self._cpu_prev[sid] = (now, jiffies, pid)
             self.store.push(f"proc.{sid}.threads", threads, now)
+            # starttime (field 22) tính bằng jiffies kể từ lúc máy khởi động
+            boot = time.time() - float(Path("/proc/uptime").read_text().split()[0])
+            self.store.push(f"proc.{sid}.uptime_s",
+                            max(0.0, now - (boot + float(tail[19]) / CLK_TCK)), now)
+        except (OSError, ValueError, IndexError):
+            pass
+
+        try:
+            for line in (base / "status").read_text().splitlines():
+                if line.startswith("nonvoluntary_ctxt_switches:"):
+                    v = float(line.split()[1])
+                    prev = self._ctx_prev.get(sid)
+                    if prev and prev[2] == pid and now > prev[0]:
+                        # bị hệ điều hành cướp CPU — cao nghĩa là đang tranh CPU
+                        self.store.push(f"proc.{sid}.ctxsw_forced_ps",
+                                        max(0.0, (v - prev[1]) / (now - prev[0])), now)
+                    else:
+                        self.store.push(f"proc.{sid}.ctxsw_forced_ps", None, now)
+                    self._ctx_prev[sid] = (now, v, pid)
+                    break
         except (OSError, ValueError, IndexError):
             pass
 
@@ -281,7 +302,7 @@ class Sampler:
         if self.metrics is None:
             return
         lo = now - TICK_S
-        total = errs = 0
+        total = errs = err4 = 0
         per_svc: dict[str, int] = {}
         for ev in reversed(self.metrics.events):
             if ev.ts < lo:
@@ -292,13 +313,32 @@ class Sampler:
             per_svc[ev.svc_id] = per_svc.get(ev.svc_id, 0) + 1
             if ev.status >= 500:
                 errs += 1
+            elif ev.status >= 400:
+                err4 += 1
         scale = 60.0 / TICK_S
         self.store.push_many({
             "req.rpm": total * scale,
             "req.err_rpm": errs * scale,
+            "req.err4xx_rpm": err4 * scale,
         }, now)
         for sid, c in per_svc.items():
             self.store.push(f"req.{sid}.rpm", c * scale, now)
+
+    def top_paths(self, window_s: float = 300.0, n: int = 10) -> list[list]:
+        """Endpoint được gọi nhiều nhất — đọc trực tiếp từ event, không lưu series
+        (mỗi path một series sẽ phình vô hạn khi app gọi URL có tham số)."""
+        if self.metrics is None:
+            return []
+        lo = time.time() - window_s
+        counts: dict[str, int] = {}
+        for ev in reversed(self.metrics.events):
+            if ev.ts < lo:
+                break
+            if ev.is_probe:
+                continue
+            key = f"{ev.svc_id}{ev.path}"[:60]
+            counts[key] = counts.get(key, 0) + 1
+        return [[k, v] for k, v in sorted(counts.items(), key=lambda kv: -kv[1])[:n]]
 
     # ── GPU ───────────────────────────────────────────────────────────
     async def _sample_gpu(self, now: float) -> None:

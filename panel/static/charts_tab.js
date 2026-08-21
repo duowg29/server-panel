@@ -84,6 +84,8 @@ const ChartsTab = {
           ${chart('proc_ram', 'RAM từng service', 'RSS cộng lại ≠ RAM máy: thư viện dùng chung bị tính trùng')}
           ${chart('proc_io', 'Đọc/ghi đĩa', '')}
           ${chart('proc_thread', 'Số luồng', '')}
+          ${chart('proc_ctx', 'Bị cướp CPU', 'lần/giây — cao = đang tranh CPU với tiến trình khác')}
+          ${chart('proc_fd', 'File đang mở', 'tăng đều mà không giảm = rò fd')}
         </div>
         <div class="chart wide" id="ch-proctable"><h3>Bảng tiến trình</h3>
           <div class="chart__body"></div></div>
@@ -95,6 +97,10 @@ const ChartsTab = {
           ${chart('req_svc', 'Request theo service', '')}
           ${chart('host_load', 'Load average', '1 · 5 · 15 phút')}
           ${chart('host_mem', 'RAM toàn máy', '')}
+          ${chart('req_err', 'Tỉ lệ lỗi', '4xx = client gọi sai · 5xx = server hỏng')}
+          ${chart('top_path', 'Endpoint gọi nhiều nhất', '5 phút gần đây')}
+          ${chart('ngrok_conns', 'Kết nối ngrok', 'đang mở · lần/phút')}
+          ${chart('uptime', 'Thời gian chạy', 'sụt về 0 = service vừa khởi động lại')}
         </div>
       </section>
 
@@ -288,6 +294,15 @@ const ChartsTab = {
       series: alive.map(s => ({ label: s, data: g(`proc.${s}.threads`) })),
     });
 
+    lineMulti(body('proc_ctx'), {
+      ...base, unit: '/s',
+      series: alive.map(s => ({ label: s, data: g(`proc.${s}.ctxsw_forced_ps`) })),
+    });
+    lineMulti(body('proc_fd'), {
+      ...base, unit: '',
+      series: alive.map(s => ({ label: s, data: g(`proc.${s}.fds`) })),
+    });
+
     this.procTable(S, last, svcs);
 
     // ── Tải nghiệp vụ ──
@@ -316,6 +331,29 @@ const ChartsTab = {
         { label: 'đã dùng', data: g('host.mem_used_mb'), color: 'var(--amber)' },
         { label: 'còn trống', data: g('host.mem_avail_mb'), color: 'var(--line-hot)' },
       ],
+    });
+
+    lineMulti(body('req_err'), {
+      ...base, unit: '/phút',
+      series: [
+        { label: '5xx server hỏng', data: g('req.err_rpm'), color: 'var(--red)' },
+        { label: '4xx gọi sai', data: g('req.err4xx_rpm'), color: 'var(--amber)' },
+      ],
+    });
+    barsH(body('top_path'), (this.meta && this.meta.top_paths) || [], null);
+    lineMulti(body('ngrok_conns'), {
+      ...base, unit: '',
+      series: [
+        { label: 'kết nối đang mở', data: g('ngrok.conns'), color: 'var(--cyan)' },
+        { label: 'request/phút', data: g('ngrok.rpm'), color: 'var(--green)' },
+      ],
+    });
+    lineMulti(body('uptime'), {
+      ...base, unit: 'phút',
+      series: alive.map(s => ({
+        label: s,
+        data: (g(`proc.${s}.uptime_s`) || []).map(v => v == null ? null : v / 60),
+      })),
     });
 
     LoadTest.render(base);

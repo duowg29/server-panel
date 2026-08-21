@@ -37,35 +37,14 @@
   <div class="col-left">
     <div id="groups"></div>
 
-    <section class="sec">
-      <h2>Telemetry<span class="close-bracket"></span></h2>
-      <div class="telemetry">
-        <div class="tile">
-          <h3>VRAM</h3>
-          <div id="vram"></div>
-        </div>
-        <div class="tile">
-          <h3>WAV đã xử lí</h3>
-          <div class="big-num" id="wav-total">0</div>
-          <div class="sub" id="wav-sub">—</div>
-        </div>
-        <div class="tile wide">
-          <h3>Request mỗi phút</h3>
-          <div id="chart-req"></div>
-        </div>
-        <div class="tile wide">
-          <h3>Request theo service</h3>
-          <div id="chart-bars"></div>
-        </div>
-        <div class="telefoot">
-          <span id="tele-foot">—</span>
-          <span class="spacer" style="flex:1"></span>
-          <button data-win="15" class="win">15s</button>
-          <button data-win="60" class="win on">60s</button>
-          <button data-win="300" class="win">5m</button>
-        </div>
+    <div class="gotocharts">
+      <div>
+        <b>Biểu đồ chi tiết</b> — VRAM theo tiến trình · độ trễ từng phụ thuộc ·
+        CPU/RAM mỗi service · request qua ngrok · nút bắn tải thử
       </div>
-    </section>
+      <button onclick="showTab('charts')">◫  Mở tab Biểu đồ</button>
+    </div>
+
   </div>
 
   <aside class="col-right">

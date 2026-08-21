@@ -285,6 +285,7 @@ async def api_series_meta(request: Request):
         "gpu_error": sampler.gpu_error,
         "series": store.names(),
         "stats": store.stats(),
+        "top_paths": sampler.top_paths(window_s=300.0, n=10),
         "services": [
             {"id": s.id, "name": s.name, "state": poller.state_of(s.id),
              "pid": (poller.snapshot.get(s.id).pid if poller.snapshot.get(s.id) else None)}

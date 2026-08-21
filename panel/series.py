@@ -70,7 +70,9 @@ DEFAULT_AGG = {
     "ngrok.p": "max",
     "ngrok.": "last",
     "load.": "p95",
-    "req.": "sum",
+    # mỗi mẫu req.* ĐÃ LÀ tốc độ (lần/phút) → gộp bằng trung bình.
+    # "sum" sẽ nhân đôi khi một ô chứa nhiều mẫu.
+    "req.": "mean",
 }
 
 

@@ -587,7 +587,7 @@ const Logs = {
 // ── Telemetry ───────────────────────────────────────────────────────
 function renderTelemetry() {
   const m = State.metrics;
-  if (!m) return;
+  if (!m || !$('#vram')) return;   // khu telemetry đã chuyển sang tab Biểu đồ
   vramBlocks($('#vram'), m.gpu, m.gpu_error);
   $('#wav-total').textContent = m.wav_total;
   $('#wav-sub').textContent = `${m.wav_in_window} trong ${Math.round(m.window_s)}s`;
@@ -644,14 +644,9 @@ function connect() {
     State.jobs = d.jobs || [];
     State.publicUrl = d.public_url;
     // payload đẩy kèm cửa sổ 300s; nếu người dùng chọn khác thì lấy riêng
-    if (State.window_s === 300) {
-      State.metrics = d.metrics || null;
-      renderTelemetry();
-    } else {
-      api('/api/metrics?window_s=' + State.window_s)
-        .then(m => { State.metrics = m; renderTelemetry(); })
-        .catch(() => {});
-    }
+    // Telemetry chi tiết đã chuyển hẳn sang tab Biểu đồ; ở đây chỉ giữ
+    // metrics cho thanh trạng thái trên cùng (GPU/VRAM).
+    State.metrics = d.metrics || null;
     renderGroups();
     renderStrip();
   };
@@ -672,15 +667,7 @@ $('#btn-reload').onclick = async () => {
 };
 $('#btn-closeall').onclick = () => Logs.closeAll();
 
-document.querySelectorAll('button.win').forEach(b => {
-  b.onclick = async () => {
-    document.querySelectorAll('button.win').forEach(x => x.classList.remove('on'));
-    b.classList.add('on');
-    State.window_s = +b.dataset.win;
-    State.metrics = await api('/api/metrics?window_s=' + State.window_s);
-    renderTelemetry();
-  };
-});
+
 
 setInterval(renderStrip, 1000);
 loadConfig().then(connect).catch(e => toast('không tải được config: ' + e.message, 'err'));
