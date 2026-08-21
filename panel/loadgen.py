@@ -32,16 +32,19 @@ REQ_TIMEOUT_S = 60.0   # assess với large-v3 có thể mất 3-10s
 
 # `max_conc`: trần đồng thời RIÊNG của hồ sơ.
 #
-# intent = 1 KHÔNG PHẢI cho chậm mà vì AN TOÀN: pipeline intent gọi sang chat
-# GGUF trên :8001, mà llama-cpp-python KHÔNG an toàn đa luồng. Bắn 2 luồng đã
-# làm cpu_inference chết thật với
+# intent = 2 chứ không phải 4: pipeline intent gọi sang chat GGUF trên :8001,
+# mà llama-cpp-python KHÔNG an toàn đa luồng. Trước đây bắn 2 luồng làm
+# cpu_inference chết thật với
 #   GGML_ASSERT(i1 >= 0 && i1 < ne1) failed  (ggml-cpu/ops.cpp:5134)
-# Đây là giới hạn của llama.cpp, không sửa được từ panel.
+# nên hồ sơ này từng bị ép về 1. Nay cpu_inference đã có threading.Lock quanh
+# create_chat_completion (commit b5fbcde) nên bắn song song không làm sập nữa --
+# nhưng llama.cpp vẫn phục vụ TUẦN TỰ, bắn thêm luồng chỉ làm dài hàng đợi chứ
+# không nhanh hơn. Giữ 2 để thấy được hàng đợi trên biểu đồ.
 PROFILES = {
     "intent":     {"svc": "intent",  "url": "http://127.0.0.1:8088/intent",
-                   "max_conc": 1,
-                   "warn": "Intent gọi chat GGUF — llama.cpp không chạy song song được, "
-                           "ép về 1 luồng để không làm chết cpu_inference"},
+                   "max_conc": 2,
+                   "warn": "Intent gọi chat GGUF — llama.cpp phục vụ tuần tự, "
+                           "thêm luồng chỉ làm dài hàng đợi chứ không nhanh hơn"},
     "transcribe": {"svc": "speech",  "url": "http://127.0.0.1:8000/transcribe",
                    "max_conc": 2},
     "assess":     {"svc": "speech",  "url": "http://127.0.0.1:8000/api/speech/assess",
