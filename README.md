@@ -34,7 +34,7 @@ rồi mở lại, nó tự nhận diện (`reconcile`) các service đang chạy
 ## Kiểm tra nhanh (không cần bootstrap)
 
 ```bash
-python3 selftest.py
+python3 selftest.py     # hoặc: bash run.sh --check
 ```
 
 Test thật, không mock: spawn process detached, adopt lại bằng pid file, stop bằng
@@ -59,6 +59,7 @@ Mỗi mục trong `services:` mô tả một thứ chạy được.
 | `start.env` | biến môi trường thêm vào |
 | `start.requires_file` / `requires_bin` | thiếu → card hiện `NO_ENV` thay vì fail |
 | `stop.mode` | `pkill` (theo `pattern`), `script`, hoặc `none` |
+| `restart.on_crash` | tự bật lại khi chết — **mặc định tắt**, xem mục dưới |
 | `health.url` + `health.rules` | quyết định badge ONLINE/DEGRADED/STARTING |
 | `health.detail` | dòng thông tin nhỏ dưới tên, dùng `{json.a.b}` |
 | `depends_on` | chưa ONLINE thì disable nút Start |
@@ -148,8 +149,46 @@ Panel chạy shell tuỳ ý theo `services.yaml`. Các rào chắn:
 | `PANEL_CONFIG` | `services.yaml` | file config; có `services.local.yaml` thì ưu tiên nó |
 | `PANEL_READONLY_CONFIG` | — | `=1` để khoá mọi endpoint sửa config |
 | `PANEL_LOG_LEVEL` | `INFO` | mức log của panel |
+| `PANEL_DB` | `data/series.db` | nơi lưu time-series dài hạn |
+| `PANEL_DISK_WARN_GB` | `10` | dưới ngần này GB trống thì báo sự cố |
 
 `services.local.yaml` nằm trong `.gitignore` — dùng để thử nghiệm mà không đụng file chính.
+
+---
+
+## Sự cố, số liệu dài hạn, tự bật lại
+
+**Hồ sơ sự cố.** Service rơi từ ONLINE xuống OFFLINE/DEGRADED thì panel chốt mốc thời
+gian và **chụp 50 dòng cuối** của log service đó ngay lúc ấy, kêu một tiếng, đẩy thông
+báo hệ thống (bấm *Bật thông báo* một lần để cấp quyền) và ghim một thanh đỏ ở đầu
+trang — bấm vào xem lại log lúc gãy. Ghi vào `{log_dir}/incidents.jsonl` nên sống sót
+qua restart panel. Bỏ qua mọi thứ đi qua UNKNOWN/STARTING: panel vừa mở hoặc TinySpeech
+đang tải 3 GB model không phải là sự cố.
+
+**Số liệu dài hạn.** RAM giữ 10 phút ở nhịp 2s cho biểu đồ thời gian thực; mỗi 30s panel
+gộp xuống SQLite (`data/series.db`, giữ 72 giờ, ô 30s). Nút *1 giờ / 6 giờ / 24 giờ* ở
+chân trang biểu đồ đọc từ đĩa — dòng trạng thái nói rõ đang xem nguồn nào, vì hai nguồn
+mịn khác nhau. Gộp bằng đúng hàm mà series đó dùng (probe latency lấy `max` để không
+làm phẳng mất spike).
+
+**Đĩa trống** được đo mỗi 30s cho phân vùng chứa `{root}` và `{log_dir}` (cùng phân vùng
+thì chỉ đo một lần), hiện ở ô KPI và báo sự cố khi xuống dưới `PANEL_DISK_WARN_GB`.
+
+**Tự bật lại.** Mặc định TẮT. Bật cho từng service trong `services.yaml`:
+
+```yaml
+restart:
+  on_crash: true
+  delay_s: 10        # chờ trước lần thử đầu
+  backoff: 2         # 10s → 20s → 40s
+  max_delay_s: 300
+  max_tries: 3       # quá 3 lần trong window_s thì dừng hẳn và ghi sự cố
+  window_s: 1800
+```
+
+Chỉ nhận trạng thái **OFFLINE** — STARTING là đang tải model, NO_ENV là thiếu file, bật
+lại đều vô nghĩa. Bạn tự bấm Dừng thì panel không đụng vào. Hết trần thì **dừng hẳn**:
+một service chết đi chết lại là việc của con người, không phải của vòng lặp.
 
 ---
 
@@ -183,5 +222,8 @@ panel/
   health.py      poller + phân loại trạng thái + roll-up composite
   logs.py        backfill + tail -F (rotate/truncate/chưa-tồn-tại)
   metrics.py     nvidia-smi + parser access log
+  series.py      time-series trong RAM (10 phút, nhịp 2s)
+  archive.py     gộp 30s rồi lưu SQLite, giữ 72 giờ
+  incidents.py   chụp log lúc service gãy + cảnh báo
   static/        index.html popout.html panel.css app.js charts.js
 ```

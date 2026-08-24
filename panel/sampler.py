@@ -33,7 +33,13 @@ EVERY_FD = 3          # 6s  — opendir đắt hơn read nhiều
 EVERY_GPU_PROC = 3    # 6s  — VRAM theo process gần như tĩnh
 EVERY_NGROK = 5       # 10s — rate1 là trung bình 1 phút
 EVERY_TRIM = 5        # 10s
+EVERY_DISK = 15       # 30s — statvfs rẻ nhưng dung lượng đĩa đâu có nhảy từng giây
 NGROK_REQ_TICKS = 2   # 4s  — chỉ khi tab mở; buffer ngrok chỉ ~50 request
+
+#: dưới ngần này GB trống thì kêu. Một lần tải large-v3 là ~3GB, nên 10 là sát.
+DISK_WARN_GB = float(os.environ.get("PANEL_DISK_WARN_GB", "10"))
+#: chỉ hết cảnh báo khi đã dọn được kha khá, tránh kêu đi kêu lại quanh ngưỡng
+DISK_CLEAR_GB = DISK_WARN_GB * 1.5
 
 CLK_TCK = os.sysconf("SC_CLK_TCK") or 100
 
@@ -61,12 +67,16 @@ def _num(s: str) -> float | None:
 
 class Sampler:
     def __init__(self, cfg: Config, sup: Supervisor, store: SeriesStore,
-                 metrics=None) -> None:
+                 metrics=None, on_alert=None) -> None:
         self.cfg = cfg
         self.sup = sup
         self.store = store
         #: MetricsCollector — nguồn event từ access log, để dẫn sang store
         self.metrics = metrics
+        #: gọi khi có thứ đáng báo động: (source, name, text)
+        self.on_alert = on_alert
+        #: phân vùng nào đang trong trạng thái kêu thiếu chỗ
+        self._disk_warned: set[str] = set()
         self.gpu_error: str | None = None
         #: tab biểu đồ còn mở tới lúc nào (mỗi lần /api/series được gọi thì gia hạn)
         self.detail_until = 0.0
@@ -143,6 +153,8 @@ class Sampler:
             await self._sample_ngrok(now)
         if detail and self._tick % NGROK_REQ_TICKS == 0:
             await self._sample_ngrok_requests(now)
+        if self._tick % EVERY_DISK == 1:
+            self._sample_disk(now)
         if self._tick % EVERY_TRIM == 0:
             self.store.trim(now)
 
@@ -190,6 +202,49 @@ class Sampler:
                 }, now)
         except (OSError, ValueError, IndexError):
             pass
+
+    def _sample_disk(self, now: float) -> None:
+        """Dung lượng trống của phân vùng chứa {root} và {log_dir}.
+
+        Models vài GB mỗi cái, log Whisper phình đều. Đĩa đầy thì giết cả stack
+        — mà trước đây panel không hề đo, nên không có cách nào cảnh báo trước.
+        """
+        seen: dict[int, str] = {}
+        targets = {"root": self.cfg.defaults.get("root"), "logs": str(self.cfg.log_dir)}
+        for name, path in targets.items():
+            if not path:
+                continue
+            try:
+                st = os.statvfs(path)
+            except OSError:
+                self.store.push(f"host.disk_{name}_free_gb", None, now)
+                continue
+            # Cùng một phân vùng thì đừng vẽ hai đường y hệt nhau.
+            key = st.f_fsid or hash((st.f_blocks, st.f_bsize))
+            if key in seen:
+                continue
+            seen[key] = name
+            free = st.f_bavail * st.f_frsize
+            total = st.f_blocks * st.f_frsize
+            free_gb = free / 1024**3
+            self.store.push_many({
+                f"host.disk_{name}_free_gb": free_gb,
+                f"host.disk_{name}_used_pct": 100.0 * (1 - free / total) if total else None,
+            }, now)
+            self._check_disk(name, path, free_gb)
+
+    def _check_disk(self, name: str, path: str, free_gb: float) -> None:
+        if self.on_alert is None:
+            return
+        if free_gb < DISK_WARN_GB and name not in self._disk_warned:
+            self._disk_warned.add(name)
+            self.on_alert(
+                "host",
+                f"Đĩa ({name})",
+                f"chỉ còn {free_gb:.1f} GB trống ở {path} — tải thêm model là hết chỗ",
+            )
+        elif free_gb > DISK_CLEAR_GB:
+            self._disk_warned.discard(name)
 
     # ── từng tiến trình ───────────────────────────────────────────────
     def _sample_procs(self, now: float, with_fd: bool) -> None:

@@ -56,11 +56,13 @@ class ServiceStatus:
 
 
 class HealthPoller:
-    def __init__(self, cfg: Config, sup: Supervisor, store=None) -> None:
+    def __init__(self, cfg: Config, sup: Supervisor, store=None, on_transition=None) -> None:
         self.cfg = cfg
         self.sup = sup
         #: SeriesStore để lưu latency thành time-series (None = không lưu)
         self.store = store
+        #: gọi khi state của một service đổi: (svc_id, prev, new)
+        self.on_transition = on_transition
         self.snapshot: dict[str, ServiceStatus] = {
             sid: ServiceStatus(id=sid) for sid in cfg.services
         }
@@ -120,7 +122,15 @@ class HealthPoller:
                 if isinstance(res, BaseException):
                     log.debug("probe %s lỗi: %s", svc.id, res)
                     continue
+                prev = self.snapshot[svc.id].state if svc.id in self.snapshot else "UNKNOWN"
                 self.snapshot[svc.id] = res
+                if self.on_transition is not None and prev != res.state:
+                    try:
+                        self.on_transition(svc.id, prev, res.state)
+                    except Exception:
+                        # Ghi hồ sơ sự cố mà lỗi thì cũng KHÔNG được làm chết
+                        # vòng probe — badge quan trọng hơn.
+                        log.exception("on_transition %s lỗi", svc.id)
 
         # composite: roll-up từ members
         for svc in self.cfg.services.values():

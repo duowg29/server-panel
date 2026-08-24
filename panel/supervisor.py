@@ -161,6 +161,9 @@ class Supervisor:
         self.cfg = cfg
         self.pids: dict[str, PidState] = {}
         self.jobs: dict[str, Job] = {}
+        #: service người dùng CHỦ ĐỘNG bấm Stop — autorestart phải chừa ra,
+        #: nếu không panel sẽ cãi lại chính người đang dùng nó.
+        self.stopped_by_user: set[str] = set()
         self._job_seq = 0
         self._log_handles: dict[str, object] = {}
 
@@ -222,6 +225,7 @@ class Supervisor:
         svc = self.cfg.get(svc_id)
         if svc.start is None:
             raise SupervisorError(f"[{svc_id}] không có cấu hình start")
+        self.stopped_by_user.discard(svc_id)
 
         missing = self.missing_requirements(svc)
         if missing:
@@ -289,6 +293,7 @@ class Supervisor:
         svc = self.cfg.get(svc_id)
         if svc.stop is None or svc.stop.mode == "none":
             raise SupervisorError(f"[{svc_id}] không có cấu hình stop")
+        self.stopped_by_user.add(svc_id)
 
         if svc.stop.mode == "script":
             job = self._spawn_job(svc, svc.stop.script,

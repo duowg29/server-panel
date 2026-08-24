@@ -18,6 +18,8 @@ const State = {
   publicUrl: null,
   busy: new Set(),
   window_s: 60,
+  incidents: [],
+  lastIncidentId: null,   // null = lần nạp đầu, đừng réo lại chuyện cũ
 };
 
 // ── HTTP ────────────────────────────────────────────────────────────
@@ -82,6 +84,95 @@ function confirmModal(text) {
       onClose: () => res(false),   // huỷ / Esc / click nền — không để promise treo
     });
   });
+}
+
+// ── Sự cố ───────────────────────────────────────────────────────────
+/* Badge đổi màu chỉ tồn tại khi có người đang nhìn. Service chết lúc bạn ở tab
+   khác thì đến khi quay lại chỉ còn OFFLINE, không còn hiện trường. Nên: kêu
+   ngay, và giữ lại 50 dòng log chụp đúng lúc gãy. */
+
+function beep(kind) {
+  try {
+    const ac = new (window.AudioContext || window.webkitAudioContext)();
+    const osc = ac.createOscillator();
+    const gain = ac.createGain();
+    osc.type = 'sine';
+    osc.frequency.value = kind === 'down' ? 220 : 660;
+    gain.gain.setValueAtTime(0.0001, ac.currentTime);
+    gain.gain.exponentialRampToValueAtTime(0.12, ac.currentTime + 0.02);
+    gain.gain.exponentialRampToValueAtTime(0.0001, ac.currentTime + 0.5);
+    osc.connect(gain).connect(ac.destination);
+    osc.start();
+    osc.stop(ac.currentTime + 0.55);
+    setTimeout(() => ac.close(), 900);
+  } catch { /* trình duyệt chặn autoplay đến khi người dùng bấm gì đó */ }
+}
+
+function notify(item) {
+  if (!('Notification' in window) || Notification.permission !== 'granted') return;
+  try {
+    new Notification(
+      item.kind === 'down' ? `${item.name} → ${item.state}` : `${item.name} đã trở lại`,
+      { body: item.kind === 'down' ? 'Bấm vào panel để xem log lúc gãy' : `${item.prev} → ONLINE`, tag: `svc-${item.svc_id}` },
+    );
+  } catch { /* ignore */ }
+}
+
+async function showIncident(id) {
+  try {
+    const item = await api(`/api/incidents/${id}`);
+    const when = new Date(item.ts * 1000).toLocaleString('vi-VN');
+    const tail = (item.tail || []).join('\n') || '(log rỗng)';
+    modal({
+      wide: true,
+      title: `${item.name} · ${item.prev} → ${item.state}`,
+      bodyHTML: `<div class="inc-meta">${when} · ${item.log || 'không có log'}</div>
+        <pre class="inc-tail"></pre>`,
+    }).querySelector('.inc-tail').textContent = tail;
+  } catch (e) { toast('không đọc được sự cố: ' + e.message, 'err'); }
+}
+
+function onIncidents(items) {
+  State.incidents = items || [];
+  const latest = State.incidents.length ? State.incidents[State.incidents.length - 1].id : 0;
+
+  if (State.lastIncidentId === null) {   // lần nạp đầu: chỉ ghi mốc
+    State.lastIncidentId = latest;
+    renderIncidentBar();
+    return;
+  }
+  const fresh = State.incidents.filter(i => i.id > State.lastIncidentId);
+  State.lastIncidentId = latest;
+
+  for (const item of fresh) {
+    const down = item.kind === 'down';
+    const t = el('div', 'toast ' + (down ? 'err' : 'ok'));
+    t.textContent = down
+      ? `${item.name}: ${item.prev} → ${item.state} — bấm để xem log lúc gãy`
+      : `${item.name} đã trở lại (${item.prev} → ONLINE)`;
+    if (down) {
+      t.style.cursor = 'pointer';
+      t.onclick = () => { showIncident(item.id); t.remove(); };
+      // Không tự tắt: sự cố mà biến mất sau 9s thì cũng như không báo.
+    } else {
+      setTimeout(() => t.remove(), 6000);
+    }
+    $('#toasts').appendChild(t);
+    beep(item.kind);
+    notify(item);
+  }
+  renderIncidentBar();
+}
+
+function renderIncidentBar() {
+  const last = [...State.incidents].reverse().find(i => i.kind === 'down');
+  const bar = $('#incident-bar');
+  if (!bar) return;
+  if (!last) { bar.hidden = true; return; }
+  bar.hidden = false;
+  const when = new Date(last.ts * 1000).toLocaleTimeString('vi-VN', { hour12: false });
+  bar.textContent = `sự cố gần nhất · ${when} · ${last.name} ${last.prev} → ${last.state}`;
+  bar.onclick = () => showIncident(last.id);
 }
 
 // ── Render card ─────────────────────────────────────────────────────
@@ -647,6 +738,7 @@ function connect() {
     // Telemetry chi tiết đã chuyển hẳn sang tab Biểu đồ; ở đây chỉ giữ
     // metrics cho thanh trạng thái trên cùng (GPU/VRAM).
     State.metrics = d.metrics || null;
+    onIncidents(d.incidents);
     renderGroups();
     renderStrip();
   };
@@ -666,6 +758,11 @@ $('#btn-reload').onclick = async () => {
   } catch (e) { toast('reload lỗi: ' + e.message, 'err'); }
 };
 $('#btn-closeall').onclick = () => Logs.closeAll();
+$('#btn-notify').onclick = async () => {
+  if (!('Notification' in window)) return toast('trình duyệt không hỗ trợ thông báo', 'err');
+  const p = await Notification.requestPermission();
+  toast(p === 'granted' ? 'đã bật thông báo khi service chết' : 'thông báo bị từ chối', p === 'granted' ? 'ok' : 'err');
+};
 
 
 

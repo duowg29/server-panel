@@ -72,6 +72,26 @@ class StopSpec:
 
 
 @dataclass
+class RestartSpec:
+    """Tự bật lại khi service chết ngoài ý muốn.
+
+    MẶC ĐỊNH TẮT, và phải tắt. Service ở đây ăn VRAM theo GB; một vòng
+    crash-loop tự động sẽ nuốt sạch GPU và che luôn nguyên nhân thật. Chỉ bật
+    cho service nào bạn đã hiểu vì sao nó chết.
+    """
+
+    on_crash: bool = False
+    #: chờ bao lâu trước lần thử đầu
+    delay_s: float = 10.0
+    #: mỗi lần thất bại thì nhân lên (10s → 20s → 40s…)
+    backoff: float = 2.0
+    max_delay_s: float = 300.0
+    #: quá số lần này trong `window_s` thì thôi, để người xử lý
+    max_tries: int = 3
+    window_s: float = 1800.0
+
+
+@dataclass
 class HealthSeries:
     """Một số đo trích từ JSON health, đẩy vào SeriesStore.
 
@@ -105,6 +125,7 @@ class Service:
     start: StartSpec | None = None
     stop: StopSpec | None = None
     health: HealthSpec | None = None
+    restart: RestartSpec = field(default_factory=RestartSpec)
     members: list[str] = field(default_factory=list)
     depends_on: list[str] = field(default_factory=list)
     conflicts_with: list[str] = field(default_factory=list)
@@ -318,6 +339,20 @@ def _parse_service(d: dict[str, Any]) -> Service:
         if mode == "script" and not stop.script:
             raise ConfigError(f"[{d['id']}] stop.mode=script cần `script`")
 
+    restart = RestartSpec()
+    if "restart" in d:
+        r = d["restart"] or {}
+        restart = RestartSpec(
+            on_crash=bool(r.get("on_crash", False)),
+            delay_s=float(r.get("delay_s", 10.0)),
+            backoff=float(r.get("backoff", 2.0)),
+            max_delay_s=float(r.get("max_delay_s", 300.0)),
+            max_tries=int(r.get("max_tries", 3)),
+            window_s=float(r.get("window_s", 1800.0)),
+        )
+        if restart.on_crash and not d.get("start"):
+            raise ConfigError(f"[{d['id']}] restart.on_crash cần khai báo `start`")
+
     health = None
     if "health" in d:
         h = d["health"]
@@ -345,7 +380,7 @@ def _parse_service(d: dict[str, Any]) -> Service:
     return Service(
         id=d["id"], name=d["name"], group=d["group"], kind=d.get("kind", "process"),
         port=d.get("port"), log=d.get("log"), pid_file=d.get("pid_file"),
-        start=start, stop=stop, health=health,
+        start=start, stop=stop, health=health, restart=restart,
         members=list(d.get("members") or []),
         depends_on=list(d.get("depends_on") or []),
         conflicts_with=list(d.get("conflicts_with") or []),

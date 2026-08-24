@@ -881,3 +881,32 @@ button.big    { min-height: 38px; font-size: 13.5px; padding: .4rem 1.1rem; }
 .gotocharts b { color: var(--cyan); font-size: 13.5px; }
 .gotocharts button { margin-left: auto; min-height: 36px; font-size: 13px;
   color: var(--cyan); border-color: rgba(34,211,238,.45); background: var(--cyan-dim); }
+
+/* ── Sự cố ──────────────────────────────────────────────────────────── */
+
+.incidentbar {
+  margin: 0 var(--pad, 16px) 8px;
+  padding: 8px 12px;
+  border: 1px solid var(--red);
+  border-left-width: 3px;
+  border-radius: 4px;
+  background: rgba(220, 70, 70, 0.09);
+  color: var(--red);
+  font-size: 12px;
+  cursor: pointer;
+}
+
+.incidentbar:hover { background: rgba(220, 70, 70, 0.16); }
+
+.inc-meta { font-size: 11px; opacity: 0.7; margin-bottom: 8px; }
+
+.inc-tail {
+  max-height: 60vh;
+  overflow: auto;
+  white-space: pre-wrap;
+  word-break: break-word;
+  font-size: 11.5px;
+  line-height: 1.45;
+}
+
+.cwsep { color: var(--dim, #8b93a1); font-size: 11px; margin: 0 2px 0 6px; }

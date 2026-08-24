@@ -68,6 +68,7 @@ const ChartsTab = {
         tile('ram', 'RAM máy', 'đã dùng'),
         tile('req', 'Request', 'mỗi phút'),
         tile('lat', 'Intent API', 'độ trễ probe'),
+        tile('disk', 'Đĩa trống', 'nơi chứa model + log'),
       ].join('');
     }
 
@@ -134,6 +135,10 @@ const ChartsTab = {
         <button data-w="60" class="cw">1 phút</button>
         <button data-w="300" class="cw on">5 phút</button>
         <button data-w="600" class="cw">10 phút</button>
+        <span class="cwsep">|  từ đĩa, ô 30s:</span>
+        <button data-w="3600" class="cw">1 giờ</button>
+        <button data-w="21600" class="cw">6 giờ</button>
+        <button data-w="86400" class="cw">24 giờ</button>
         <span style="flex:1"></span>
         <button id="ch-pause">⏸  Tạm dừng</button>
         <span id="ch-stat" class="sub"></span>
@@ -200,6 +205,12 @@ const ChartsTab = {
       g('host.mem_used_mb'), 'var(--amber)');
     this.kpi('req', fmtNum(last('req.rpm'), ''), g('req.rpm'), 'var(--cyan)');
     this.kpi('lat', fmtNum(last('probe.intent.latency_ms'), 'ms'), g('probe.intent.latency_ms'), 'var(--red)');
+    // Đĩa gần như phẳng nên KHÔNG đáng một biểu đồ riêng — nhưng đĩa đầy thì
+    // chết cả stack, nên vẫn phải liếc thấy được.
+    const diskFree = last('host.disk_root_free_gb') ?? last('host.disk_logs_free_gb');
+    this.kpi('disk', diskFree == null ? '—' : `${diskFree.toFixed(1)} GB`,
+      g('host.disk_root_free_gb') || g('host.disk_logs_free_gb'),
+      diskFree != null && diskFree < 10 ? 'var(--red)' : 'var(--green)');
 
     // ── GPU ──
     lineMulti(body('gpu_time'), {
@@ -287,7 +298,12 @@ const ChartsTab = {
 
     const st = document.getElementById('ch-stat');
     if (st && this.meta && this.meta.stats) {
+      const arc = this.meta.archive || {};
+      // Nói rõ đang xem RAM hay đĩa: hai nguồn có độ mịn khác nhau (2s vs 30s),
+      // không nói thì người xem tưởng dữ liệu bị thưa đi.
       st.textContent = `${this.meta.stats.series} series · ${this.meta.stats.points} điểm`
+        + (d.source === 'archive' ? ` · từ đĩa (ô ${Math.round(d.bucket_s)}s)` : ' · thời gian thực')
+        + (arc.ok ? ` · lưu ${arc.retention_h}h, ${arc.db_mb} MB` : '')
         + (this.meta.gpu_error ? ` · GPU: ${this.meta.gpu_error}` : '');
     }
   },

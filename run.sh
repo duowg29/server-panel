@@ -15,6 +15,13 @@ if [[ ! -x "$HERE/.venv/bin/python" ]]; then
   exit 1
 fi
 
+# --check: chạy selftest rồi thoát. Test thật (spawn process, tail log qua
+# rotate, parse access log) nên đáng chạy sau mỗi lần sửa supervisor/logs.
+if [[ "${1:-}" == "--check" ]]; then
+  cd "$HERE"
+  exec .venv/bin/python selftest.py
+fi
+
 # Báo rõ khi port đã có người giữ — uvicorn chỉ ném Errno 98 khó đọc
 if ss -tln 2>/dev/null | grep -q "127.0.0.1:${PORT}\b"; then
   owner="$(ss -tlnp 2>/dev/null | grep "127.0.0.1:${PORT}\b" | grep -oP 'pid=\K[0-9]+' | head -1)"

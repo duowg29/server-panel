@@ -23,10 +23,14 @@
   <div class="actions">
     <button id="btn-reload">↻  Nạp lại config</button>
     <button id="btn-closeall">✕  Đóng hết log</button>
+    <button id="btn-notify" title="Cho phép thông báo hệ thống khi service chết">🔔  Bật thông báo</button>
   </div>
 </div>
 
 <div class="statusstrip" id="strip"></div>
+
+<!-- Sự cố gần nhất: bấm vào xem 50 dòng log chụp đúng lúc service gãy -->
+<div class="incidentbar" id="incident-bar" hidden></div>
 
 
 <div id="kpi-row" class="kpirow"></div>

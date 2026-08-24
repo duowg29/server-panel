@@ -26,8 +26,10 @@ from fastapi.responses import FileResponse, JSONResponse
 from fastapi.staticfiles import StaticFiles
 
 from . import config as cfgmod
+from .archive import SeriesArchive
 from .config import Config, ConfigError, mask_env
 from .health import HealthPoller
+from .incidents import IncidentLog, should_record
 from .loadgen import LoadGen
 from .logs import LogRegistry, backfill
 from .metrics import MetricsCollector
@@ -69,12 +71,30 @@ async def lifespan(app: FastAPI):
 
     sup = Supervisor(cfg)
     store = SeriesStore()
-    poller = HealthPoller(cfg, sup, store)
+    archive = SeriesArchive(Path(os.environ.get("PANEL_DB", HERE.parent / "data" / "series.db")))
+    cfg.log_dir.mkdir(parents=True, exist_ok=True)
+    incidents = IncidentLog(cfg.log_dir / "incidents.jsonl")
+
+    def _on_transition(svc_id: str, prev: str, state: str) -> None:
+        if not should_record(prev, state):
+            return
+        svc = app.state.cfg.services.get(svc_id)
+        incidents.record(
+            svc_id=svc_id,
+            name=svc.name if svc else svc_id,
+            prev=prev,
+            state=state,
+            log_path=svc.log if svc else None,
+        )
+
+    def _on_alert(source: str, name: str, text: str) -> None:
+        incidents.alert(source=source, name=name, text=text)
+
+    poller = HealthPoller(cfg, sup, store, on_transition=_on_transition)
     metrics = MetricsCollector(cfg)
-    sampler = Sampler(cfg, sup, store, metrics)
+    sampler = Sampler(cfg, sup, store, metrics, on_alert=_on_alert)
     loadgen = LoadGen(cfg, store, poller)
 
-    cfg.log_dir.mkdir(parents=True, exist_ok=True)
     sup.reconcile()
 
     app.state.cfg = cfg
@@ -83,7 +103,9 @@ async def lifespan(app: FastAPI):
     app.state.metrics = metrics
     app.state.logs = LogRegistry()
     app.state.status_subs = set()
+    app.state.incidents = incidents
     app.state.store = store
+    app.state.archive = archive
     app.state.sampler = sampler
     app.state.loadgen = loadgen
 
@@ -94,6 +116,8 @@ async def lifespan(app: FastAPI):
         asyncio.create_task(_broadcast_loop(app), name="broadcast"),
         asyncio.create_task(_job_watch_loop(app), name="jobwatch"),
         asyncio.create_task(sampler.run(), name="sampler"),
+        asyncio.create_task(_archive_loop(app), name="archive"),
+        asyncio.create_task(_autorestart_loop(app), name="autorestart"),
     ]
     log.info("panel sẵn sàng: http://127.0.0.1:%s", PORT)
     try:
@@ -103,6 +127,8 @@ async def lifespan(app: FastAPI):
             t.cancel()
         await asyncio.gather(*tasks, return_exceptions=True)
         app.state.logs.shutdown()
+        archive.flush(store)
+        archive.close()
         sup.shutdown()
 
 
@@ -142,6 +168,100 @@ async def _broadcast_loop(app: FastAPI) -> None:
                 subs.discard(ws)
 
 
+async def _archive_loop(app: FastAPI) -> None:
+    """Đẩy series từ RAM xuống đĩa mỗi 30s.
+
+    Chạy trong thread riêng qua run_in_executor: sqlite là blocking, mà event
+    loop này còn phải phục vụ /ws/logs theo thời gian thực.
+    """
+    archive: SeriesArchive = app.state.archive
+    store: SeriesStore = app.state.store
+    loop = asyncio.get_running_loop()
+    while True:
+        await asyncio.sleep(30.0)
+        try:
+            await loop.run_in_executor(None, archive.flush, store)
+            await loop.run_in_executor(None, archive.vacuum)
+        except asyncio.CancelledError:
+            raise
+        except Exception:
+            log.exception("archive flush lỗi")
+
+
+async def _autorestart_loop(app: FastAPI) -> None:
+    """Bật lại service đã khai `restart.on_crash: true` khi nó chết.
+
+    Ba cái phanh, cái nào cũng cần thiết:
+      * chỉ nhận OFFLINE — STARTING là đang tải model 3GB, NO_ENV là thiếu file,
+        bật lại đều vô nghĩa;
+      * backoff luỹ tiến, để không quay vòng vài giây một lần;
+      * trần số lần trong một cửa sổ — hết trần thì DỪNG HẲN và ghi sự cố. Một
+        service chết đi chết lại là việc của con người, không phải của vòng lặp.
+
+    Người bấm Stop tay thì `sup.state().wanted` là stopped → không đụng vào.
+    """
+    tries: dict[str, list[float]] = {}
+    next_try: dict[str, float] = {}
+
+    while True:
+        await asyncio.sleep(5.0)
+        cfg: Config = app.state.cfg
+        poller: HealthPoller = app.state.poller
+        sup: Supervisor = app.state.sup
+        now = time.time()
+
+        for svc in cfg.services.values():
+            r = svc.restart
+            if not r.on_crash or svc.start is None or svc.kind == "composite":
+                continue
+            if poller.state_of(svc.id) != "OFFLINE":
+                if poller.state_of(svc.id) == "ONLINE":
+                    tries.pop(svc.id, None)
+                    next_try.pop(svc.id, None)
+                continue
+            if svc.id in sup.stopped_by_user:
+                continue          # người dùng tự bấm Stop — kệ nó
+            if _blocked_by(app, svc) or any(
+                poller.state_of(d) != "ONLINE" for d in svc.depends_on
+            ):
+                continue
+
+            recent = [t for t in tries.get(svc.id, []) if now - t < r.window_s]
+            tries[svc.id] = recent
+            if len(recent) >= r.max_tries:
+                if next_try.get(svc.id) != -1:
+                    next_try[svc.id] = -1     # đánh dấu đã bỏ cuộc, chỉ báo một lần
+                    app.state.incidents.alert(
+                        source=svc.id,
+                        name=svc.name,
+                        text=f"đã thử bật lại {len(recent)} lần trong "
+                             f"{int(r.window_s / 60)} phút mà vẫn chết — dừng tự động",
+                    )
+                continue
+
+            due = next_try.get(svc.id)
+            if due is None:
+                delay = min(r.delay_s * (r.backoff ** len(recent)), r.max_delay_s)
+                next_try[svc.id] = now + delay
+                log.info("autorestart %s: chờ %.0fs rồi bật lại", svc.id, delay)
+                continue
+            if due < 0 or now < due:
+                continue
+
+            tries[svc.id] = [*recent, now]
+            next_try.pop(svc.id, None)
+            log.warning("autorestart %s: bật lại (lần %d)", svc.id, len(recent) + 1)
+            app.state.incidents.alert(
+                source=svc.id, name=svc.name,
+                text=f"tự bật lại lần {len(recent) + 1}/{r.max_tries}", kind="up",
+            )
+            try:
+                await asyncio.to_thread(sup.start, svc.id)
+                poller.wake(svc.id)
+            except SupervisorError as e:
+                log.warning("autorestart %s lỗi: %s", svc.id, e)
+
+
 async def _job_watch_loop(app: FastAPI) -> None:
     """Job `mode: script` xong → reconcile ngay.
 
@@ -177,6 +297,8 @@ def _status_payload(app: FastAPI) -> dict[str, Any]:
         "services": services,
         "public_url": poller.public_url(),
         "metrics": metrics.series(window_s=300.0),
+        # Bản rút gọn, không kèm tail log — payload này đẩy 2s/lần.
+        "incidents": app.state.incidents.recent(),
         "jobs": [
             {"id": j.id, "svc_id": j.svc_id, "kind": j.kind, "label": j.label,
              "running": j.running, "rc": j.rc, "log": j.log_path,
@@ -271,6 +393,26 @@ async def api_status(request: Request):
     return _status_payload(request.app)
 
 
+@app.get("/api/incidents")
+async def api_incidents(request: Request, n: int = Query(50, ge=1, le=200)):
+    return {"items": request.app.state.incidents.recent(n)}
+
+
+@app.get("/api/incidents/{incident_id}")
+async def api_incident(request: Request, incident_id: int):
+    """Bản đầy đủ — kèm 50 dòng log chụp đúng lúc service gãy."""
+    item = request.app.state.incidents.get(incident_id)
+    if item is None:
+        raise HTTPException(404, f"không có sự cố {incident_id}")
+    return item
+
+
+@app.delete("/api/incidents")
+async def api_incidents_clear(request: Request):
+    request.app.state.incidents.clear()
+    return {"ok": True}
+
+
 @app.get("/api/series/meta")
 async def api_series_meta(request: Request):
     """Thông tin tĩnh + danh sách series. Tab biểu đồ gọi 1 lần khi mở."""
@@ -286,6 +428,7 @@ async def api_series_meta(request: Request):
         "series": store.names(),
         "stats": store.stats(),
         "top_paths": sampler.top_paths(window_s=300.0, n=10),
+        "archive": app_.state.archive.stats(),
         "services": [
             {"id": s.id, "name": s.name, "state": poller.state_of(s.id),
              "pid": (poller.snapshot.get(s.id).pid if poller.snapshot.get(s.id) else None)}
@@ -298,19 +441,36 @@ async def api_series_meta(request: Request):
 @app.get("/api/series")
 async def api_series(
     request: Request,
-    window_s: float = Query(600.0, ge=30, le=600),
+    # Trên 600s là vượt cửa sổ RAM → lấy từ archive trên đĩa (ô 30s).
+    window_s: float = Query(600.0, ge=30, le=259200),
     buckets: int = Query(120, ge=10, le=600),
     names: str | None = Query(None, description="lọc theo tiền tố, cách nhau bởi dấu phẩy"),
 ):
     """Dữ liệu biểu đồ. Tab mở mới poll — không nhồi vào WebSocket của trang chính."""
     store: SeriesStore = request.app.state.store
+    archive: SeriesArchive = request.app.state.archive
     # báo cho sampler biết tab đang mở → bật nhánh ngrok-requests
     request.app.state.sampler.note_detail_interest()
-    wanted = None
-    if names:
-        prefixes = tuple(x.strip() for x in names.split(",") if x.strip())
-        wanted = [n for n in store.names() if n.startswith(prefixes)]
-    return store.resample(wanted, window_s=window_s, buckets=buckets)
+
+    prefixes = tuple(x.strip() for x in names.split(",") if x.strip()) if names else None
+
+    # RAM chỉ giữ 10 phút. Xin rộng hơn thì phải lấy từ đĩa, và phải nói rõ
+    # nguồn — độ mịn khác nhau (2s so với 30s) sẽ thấy ngay trên chart.
+    if window_s > store.retention_s:
+        # Tên trên đĩa có thể gồm cả series đã chết, nên lọc từ archive chứ
+        # không lọc theo store.names().
+        wanted = None
+        if prefixes:
+            wanted = [n for n in archive.resample(window_s=window_s, buckets=2)["series"]
+                      if n.startswith(prefixes)]
+        out = archive.resample(wanted, window_s=window_s, buckets=buckets)
+        out["source"] = "archive"
+        return out
+
+    wanted = [n for n in store.names() if n.startswith(prefixes)] if prefixes else None
+    out = store.resample(wanted, window_s=window_s, buckets=buckets)
+    out["source"] = "live"
+    return out
 
 
 @app.get("/api/requests/recent")

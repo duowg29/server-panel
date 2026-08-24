@@ -124,6 +124,11 @@ class SeriesStore:
         dq = self._data.get(name)
         return dq[-1][0] if dq else None
 
+    def raw(self, name: str) -> list[Point]:
+        """Mẫu thô của một series. Dùng khi cần tự gộp kiểu khác (xem archive.py)."""
+        dq = self._data.get(name)
+        return list(dq) if dq else []
+
     def resample(
         self,
         names: Iterable[str] | None = None,
