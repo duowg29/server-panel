@@ -1,9 +1,13 @@
 """Thu thập số liệu.
 
 Không service nào có /metrics, nên panel tự lấy:
-  - VRAM  : nvidia-smi mỗi 2s
   - request: parse dòng access của uvicorn trong log file
   - wav   : đếm request trúng các path xử lý audio
+
+VRAM KHÔNG lấy ở đây. `Sampler` đã gọi nvidia-smi mỗi 2s và lấy đủ 12 trường;
+file này từng gọi thêm một lần nữa với 5 trường, tức là fork nvidia-smi hai lần
+song song mãi mãi. `gpu_series()` giờ đọc lại từ SeriesStore để `/api/metrics`
+không đổi hình dạng trả về.
 
 Lưu ý về độ chính xác: dòng access của uvicorn KHÔNG có timestamp, nên event
 được đóng dấu lúc panel đọc được. Sai số dưới ~1s — đủ cho dashboard, KHÔNG
@@ -24,7 +28,6 @@ from .config import Config
 
 log = logging.getLogger("panel.metrics")
 
-GPU_INTERVAL_S = 2.0
 LOG_INTERVAL_S = 1.0
 RETENTION_S = 600.0
 #: ô nhỏ hơn ngần này thì đồ thị chỉ còn là nhiễu lấy mẫu
@@ -41,16 +44,6 @@ DEFAULT_IGNORE = ("/health", "/gateway/health")
 
 
 @dataclass
-class GpuSample:
-    ts: float
-    index: int
-    name: str
-    used_mb: int
-    total_mb: int
-    util_pct: int
-
-
-@dataclass
 class RequestEvent:
     ts: float
     svc_id: str
@@ -61,11 +54,11 @@ class RequestEvent:
 
 
 class MetricsCollector:
-    def __init__(self, cfg: Config) -> None:
+    def __init__(self, cfg: Config, store=None) -> None:
         self.cfg = cfg
-        self.gpu: deque[GpuSample] = deque(maxlen=2000)
+        #: SeriesStore — nguồn duy nhất của số liệu GPU (Sampler đẩy vào)
+        self.store = store
         self.events: deque[RequestEvent] = deque(maxlen=50000)
-        self.gpu_error: str | None = None
         self.wav_total = 0
         self._offsets: dict[str, int] = {}
         self._inodes: dict[str, tuple[int, int]] = {}
@@ -75,51 +68,11 @@ class MetricsCollector:
     def rebind(self, cfg: Config) -> None:
         self.cfg = cfg
 
-    # ── GPU ───────────────────────────────────────────────────────────
-    async def run_gpu(self) -> None:
-        while True:
-            try:
-                await self._sample_gpu()
-            except asyncio.CancelledError:
-                raise
-            except Exception:
-                log.exception("gpu sample lỗi")
-            await asyncio.sleep(GPU_INTERVAL_S)
-
-    async def _sample_gpu(self) -> None:
-        try:
-            proc = await asyncio.create_subprocess_exec(
-                "nvidia-smi",
-                "--query-gpu=index,name,memory.used,memory.total,utilization.gpu",
-                "--format=csv,noheader,nounits",
-                stdout=asyncio.subprocess.PIPE, stderr=asyncio.subprocess.PIPE,
-            )
-            out, err = await asyncio.wait_for(proc.communicate(), timeout=3.0)
-        except FileNotFoundError:
-            self.gpu_error = "nvidia-smi không có"
-            return
-        except (asyncio.TimeoutError, OSError) as e:
-            self.gpu_error = f"nvidia-smi: {type(e).__name__}"
-            return
-
-        if proc.returncode != 0:
-            self.gpu_error = (err.decode("utf-8", "replace").strip() or "nvidia-smi lỗi")[:120]
-            return
-
-        self.gpu_error = None
-        now = time.time()
-        for line in out.decode("utf-8", "replace").splitlines():
-            parts = [p.strip() for p in line.split(",")]
-            if len(parts) < 5:
-                continue
-            try:
-                self.gpu.append(GpuSample(
-                    ts=now, index=int(parts[0]), name=parts[1],
-                    used_mb=int(parts[2]), total_mb=int(parts[3]), util_pct=int(parts[4]),
-                ))
-            except ValueError:
-                continue
-        self._trim()
+    @property
+    def gpu_error(self) -> str | None:
+        """Lỗi nvidia-smi. Sampler là nơi duy nhất thật sự gọi nvidia-smi; nó
+        soi lỗi vào `store.meta` để chỗ khác đọc mà không cần tham chiếu ngược."""
+        return self.store.meta.get("gpu_error") if self.store else None
 
     # ── Access log ────────────────────────────────────────────────────
     async def run_logs(self) -> None:
@@ -201,8 +154,6 @@ class MetricsCollector:
 
     def _trim(self) -> None:
         cutoff = time.time() - RETENTION_S
-        while self.gpu and self.gpu[0].ts < cutoff:
-            self.gpu.popleft()
         while self.events and self.events[0].ts < cutoff:
             self.events.popleft()
 
@@ -254,20 +205,34 @@ class MetricsCollector:
         }
 
     def gpu_series(self, points: int = 60) -> list[dict]:
-        by_idx: dict[int, list[GpuSample]] = {}
-        for s in self.gpu:
-            by_idx.setdefault(s.index, []).append(s)
+        """Dựng lại từ SeriesStore — giữ nguyên hình dạng cũ cho /api/metrics.
+
+        Sampler đẩy `gpu.<i>.mem_used_mb` / `gpu.<i>.util` mỗi 2s; tổng dung
+        lượng và tên card nằm ở `store.meta` vì chúng không đổi.
+        """
+        if self.store is None:
+            return []
+        idxs = sorted({
+            int(n.split(".")[1])
+            for n in self.store.names()
+            if n.startswith("gpu.") and n.split(".")[1].isdigit()
+        })
         out = []
-        for idx, samples in sorted(by_idx.items()):
-            tail = samples[-points:]
-            last = tail[-1]
+        for idx in idxs:
+            used = [v for _, v in self.store.raw(f"gpu.{idx}.mem_used_mb")[-points:]
+                    if v is not None]
+            util = [v for _, v in self.store.raw(f"gpu.{idx}.util")[-points:]
+                    if v is not None]
+            if not used:
+                continue
+            total = self.store.meta.get("gpu_total_mb") or 0
             out.append({
                 "index": idx,
-                "name": last.name,
-                "used_mb": last.used_mb,
-                "total_mb": last.total_mb,
-                "util_pct": last.util_pct,
-                "used_series": [s.used_mb for s in tail],
-                "util_series": [s.util_pct for s in tail],
+                "name": self.store.meta.get("gpu_name", "GPU"),
+                "used_mb": round(used[-1]),
+                "total_mb": round(total),
+                "util_pct": round(util[-1]) if util else 0,
+                "used_series": [round(v) for v in used],
+                "util_series": [round(v) for v in util],
             })
         return out

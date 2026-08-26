@@ -16,6 +16,7 @@ import asyncio
 import logging
 import os
 import time
+from collections import deque
 from pathlib import Path
 from typing import Any
 
@@ -35,6 +36,8 @@ EVERY_NGROK = 5       # 10s — rate1 là trung bình 1 phút
 EVERY_TRIM = 5        # 10s
 EVERY_DISK = 15       # 30s — statvfs rẻ nhưng dung lượng đĩa đâu có nhảy từng giây
 NGROK_REQ_TICKS = 2   # 4s  — chỉ khi tab mở; buffer ngrok chỉ ~50 request
+#: bao nhiêu id request nhớ để chống đếm trùng
+NGROK_SEEN_MAX = 2000
 
 #: dưới ngần này GB trống thì kêu. Một lần tải large-v3 là ~3GB, nên 10 là sát.
 DISK_WARN_GB = float(os.environ.get("PANEL_DISK_WARN_GB", "10"))
@@ -89,9 +92,13 @@ class Sampler:
         self._ctx_prev: dict[str, tuple[float, float, int]] = {}
         self._host_cpu_prev: tuple[float, float] | None = None      # (busy, total)
         self._ngrok_count_prev: float | None = None
-        #: request qua ngrok đã thấy, dedup theo id
+        #: request qua ngrok đã thấy, dedup theo id.
+        #: deque + set đi đôi: set để hỏi nhanh, deque để biết id nào cũ nhất mà
+        #: bỏ. Bản cũ dựng lại set từ `items` đang có — buffer ngrok chỉ ~50
+        #: request nên id vừa bị bỏ sẽ được đếm lại lần sau.
         self.ngrok_requests: list[dict[str, Any]] = []
         self._ngrok_seen: set[str] = set()
+        self._ngrok_seen_order: deque[str] = deque()
 
         self._read_static()
 
@@ -459,6 +466,12 @@ class Sampler:
                 self.store.push(f"gpuproc.{sid}.vram_mb", 0.0, now)
         self.store.push("gpuproc._other.vram_mb", other, now)
 
+    def _set_gpu_error(self, err: str | None) -> None:
+        """Soi lỗi sang store.meta để MetricsCollector / API đọc được mà không
+        phải giữ tham chiếu ngược tới Sampler."""
+        self.gpu_error = err
+        self.store.meta["gpu_error"] = err
+
     async def _run_smi(self, args: list[str]) -> str | None:
         try:
             proc = await asyncio.create_subprocess_exec(
@@ -467,15 +480,16 @@ class Sampler:
             )
             out, err = await asyncio.wait_for(proc.communicate(), timeout=3.0)
         except FileNotFoundError:
-            self.gpu_error = "nvidia-smi không có"
+            self._set_gpu_error("nvidia-smi không có")
             return None
         except (asyncio.TimeoutError, OSError) as e:
-            self.gpu_error = f"nvidia-smi: {type(e).__name__}"
+            self._set_gpu_error(f"nvidia-smi: {type(e).__name__}")
             return None
         if proc.returncode != 0:
-            self.gpu_error = (err.decode("utf-8", "replace").strip() or "nvidia-smi lỗi")[:120]
+            self._set_gpu_error(
+                (err.decode("utf-8", "replace").strip() or "nvidia-smi lỗi")[:120])
             return None
-        self.gpu_error = None
+        self._set_gpu_error(None)
         return out.decode("utf-8", "replace")
 
     # ── ngrok ─────────────────────────────────────────────────────────
@@ -533,6 +547,7 @@ class Sampler:
             if not rid or rid in self._ngrok_seen:
                 continue
             self._ngrok_seen.add(rid)
+            self._ngrok_seen_order.append(rid)
             try:
                 # Python 3.10: fromisoformat KHÔNG nhận hậu tố Z
                 start = it.get("start", "").replace("Z", "+00:00")
@@ -557,5 +572,5 @@ class Sampler:
         # giữ theo cửa sổ retention
         cutoff = now - self.store.retention_s
         self.ngrok_requests = [x for x in self.ngrok_requests if x["t"] >= cutoff][-500:]
-        if len(self._ngrok_seen) > 2000:
-            self._ngrok_seen = set(x.get("id", "") for x in items)
+        while len(self._ngrok_seen_order) > NGROK_SEEN_MAX:
+            self._ngrok_seen.discard(self._ngrok_seen_order.popleft())

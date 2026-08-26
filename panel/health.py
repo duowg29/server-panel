@@ -31,6 +31,14 @@ _DETAIL_RE = re.compile(r"\{([^}]+)\}")
 
 
 @dataclass
+class Fetched:
+    """Kết quả một lần GET /health, dùng chung cho mọi service khai cùng URL."""
+    payload: Any = None
+    latency_ms: int | None = None
+    error: str | None = None
+
+
+@dataclass
 class ServiceStatus:
     id: str
     state: str = "UNKNOWN"
@@ -115,8 +123,16 @@ class HealthPoller:
                if s.kind != "composite" and self._next_at.get(s.id, 0) <= now]
 
         if due:
+            # GỌI MỘT LẦN CHO MỖI URL. Nhiều service khai chung một endpoint
+            # health là chuyện bình thường ở đây: cpu_inf và vllm_embed cùng
+            # :8001, gpu_chat và vllm_chat cùng :8002, intent và intent_vllm
+            # cùng :8088 — chúng là hai cách chạy CÙNG một thứ, chỉ khác profile.
+            # Hỏi riêng từng cái là nhân đôi chi phí của endpoint đó, mà /health
+            # của Intent API lại ping Postgres trên cloud mỗi lần bị hỏi.
+            fetched = await self._fetch_all(due)
             results = await asyncio.gather(
-                *(self._probe(s) for s in due), return_exceptions=True
+                *(self._probe(s, fetched.get(self._probe_key(s))) for s in due),
+                return_exceptions=True,
             )
             for svc, res in zip(due, results):
                 if isinstance(res, BaseException):
@@ -145,7 +161,37 @@ class HealthPoller:
         self._next_at[svc_id] = 0.0
 
     # -- probe ---------------------------------------------------------
-    async def _probe(self, svc: Service) -> ServiceStatus:
+    @staticmethod
+    def _probe_key(svc: Service) -> str | None:
+        return svc.health.url if svc.health else None
+
+    async def _fetch_all(self, due: list[Service]) -> dict[str, "Fetched"]:
+        """Một lần GET cho mỗi URL riêng biệt trong lứa này."""
+        urls = {u for u in (self._probe_key(s) for s in due) if u}
+        if not urls:
+            return {}
+        ordered = sorted(urls)
+        got = await asyncio.gather(*(self._fetch_one(u) for u in ordered))
+        return dict(zip(ordered, got))
+
+    async def _fetch_one(self, url: str) -> "Fetched":
+        if self._client is None:
+            return Fetched(error="no_client")
+        t0 = time.perf_counter()
+        try:
+            r = await self._client.get(url)
+            ms = int((time.perf_counter() - t0) * 1000)
+            if r.status_code >= 400:
+                return Fetched(latency_ms=ms, error=f"HTTP {r.status_code}")
+            try:
+                return Fetched(payload=r.json(), latency_ms=ms)
+            except ValueError:
+                return Fetched(payload={"_text": r.text[:200]}, latency_ms=ms)
+        except httpx.HTTPError as e:
+            return Fetched(latency_ms=int((time.perf_counter() - t0) * 1000),
+                           error=type(e).__name__)
+
+    async def _probe(self, svc: Service, fetched: "Fetched | None" = None) -> ServiceStatus:
         now = time.time()
         st = ServiceStatus(id=svc.id, checked_at=now)
 
@@ -155,20 +201,12 @@ class HealthPoller:
         st.external = pid_state.external
 
         payload: Any = None
-        if svc.health and svc.health.url and self._client is not None:
-            t0 = time.perf_counter()
-            try:
-                r = await self._client.get(svc.health.url)
-                st.latency_ms = int((time.perf_counter() - t0) * 1000)
-                if r.status_code >= 400:
-                    st.error = f"HTTP {r.status_code}"
-                else:
-                    try:
-                        payload = r.json()
-                    except ValueError:
-                        payload = {"_text": r.text[:200]}
-            except httpx.HTTPError as e:
-                st.error = type(e).__name__
+        if svc.health and svc.health.url:
+            if fetched is None:                      # gọi lẻ (test, wake)
+                fetched = await self._fetch_one(svc.health.url)
+            payload = fetched.payload
+            st.latency_ms = fetched.latency_ms
+            st.error = fetched.error
 
         st.state = self._classify(svc, payload, st)
 
@@ -179,6 +217,11 @@ class HealthPoller:
                 st.latency_ms if st.error is None and st.latency_ms is not None else None,
                 now,
             )
+            # Trạng thái thành time-series, để vẽ được dải timeline và xem lại
+            # qua archive. Dùng ĐÚNG thang SEVERITY của config, không định nghĩa
+            # thang thứ hai. Gộp bằng `max` (xem series.DEFAULT_AGG): một ô 30
+            # phút có 10 giây OFFLINE thì cả ô đó phải là OFFLINE.
+            self.store.push(f"state.{svc.id}", SEVERITY.get(st.state, 3), now)
             self._push_declared_series(svc, payload, now)
 
         if payload is not None:
@@ -193,8 +236,11 @@ class HealthPoller:
             self._fails[svc.id] = self._fails.get(svc.id, 0) + 1
         else:
             self._fails[svc.id] = 0
-        interval = (BACKOFF_INTERVAL_S if self._fails.get(svc.id, 0) >= BACKOFF_AFTER
-                    else self.cfg.health_interval_s)
+        base = (svc.health.interval_s if svc.health and svc.health.interval_s
+                else self.cfg.health_interval_s)
+        # backoff chỉ được LÀM THƯA hơn, không bao giờ dày hơn nhịp đã khai
+        interval = (max(BACKOFF_INTERVAL_S, base)
+                    if self._fails.get(svc.id, 0) >= BACKOFF_AFTER else base)
         self._next_at[svc.id] = now + interval
 
         return st

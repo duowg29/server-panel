@@ -19,7 +19,17 @@ fi
 # rotate, parse access log) nên đáng chạy sau mỗi lần sửa supervisor/logs.
 if [[ "${1:-}" == "--check" ]]; then
   cd "$HERE"
-  exec .venv/bin/python selftest.py
+  .venv/bin/python selftest.py || exit 1
+  # Frontend: chỉ cần node trần, không dependency. Máy không có node thì bỏ qua
+  # — panel vẫn chạy được, chỉ là không kiểm được phần render.
+  if command -v node >/dev/null 2>&1; then
+    echo
+    echo "== frontend =="
+    node selftest_ui.js || exit 1
+  else
+    echo "(bỏ qua selftest_ui.js — máy không có node)"
+  fi
+  exit 0
 fi
 
 # Báo rõ khi port đã có người giữ — uvicorn chỉ ném Errno 98 khó đọc

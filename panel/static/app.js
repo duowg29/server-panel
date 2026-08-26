@@ -178,9 +178,21 @@ function renderIncidentBar() {
 // ── Render card ─────────────────────────────────────────────────────
 function stateOf(id) { return (State.status[id] || {}).state || 'UNKNOWN'; }
 
+/* Card dựng MỘT LẦN, sau đó chỉ cập nhật tại chỗ.
+
+   Trước đây mỗi frame status (2s) gọi renderGroups() → xoá sạch #groups rồi
+   dựng lại toàn bộ. Hệ quả không phải chỉ là tốn CPU: bảng "⋯ Thêm" đang mở tự
+   sập, tooltip đang hiện biến mất, nút đang hover mất trạng thái. Thao tác của
+   người dùng bị reset hai giây một lần.
+
+   Nên tách: buildCard() dựng khung, syncCard() chỉ ghi đè text/class/disabled.
+   renderGroups() giờ chỉ chạy khi CONFIG đổi. */
+let _cards = new Map();   // svc_id -> phần tử card
+
 function renderGroups() {
   const wrap = $('#groups');
   wrap.innerHTML = '';
+  _cards = new Map();
   if (!State.cfg) return;
 
   for (const g of State.cfg.groups) {
@@ -192,109 +204,91 @@ function renderGroups() {
     h.appendChild(el('span', 'close-bracket'));
     sec.appendChild(h);
     const grid = el('div', 'cards');
-    svcs.forEach(s => grid.appendChild(renderCard(s)));
+    svcs.forEach(s => {
+      const card = buildCard(s);
+      _cards.set(s.id, card);
+      grid.appendChild(card);
+    });
     sec.appendChild(grid);
     wrap.appendChild(sec);
   }
+  syncAll();
 }
 
-function renderCard(svc) {
-  const st = State.status[svc.id] || {};
-  const state = st.state || 'UNKNOWN';
-  const card = el('div', 'card' + (svc.emphasis === 'primary' ? ' primary' : '') +
-    (State.busy.has(svc.id) ? ' busy' : ''));
+/** Cập nhật mọi card theo State.status hiện tại. KHÔNG xoá node nào. */
+function syncAll() {
+  if (!State.cfg) return;
+  for (const svc of State.cfg.services) {
+    const card = _cards.get(svc.id);
+    if (card) syncCard(card, svc);
+  }
+}
+
+function buildCard(svc) {
+  const card = el('div', 'card');
   card.dataset.id = svc.id;
+  const p = card._p = {};
 
   const head = el('div', 'card__head');
   head.appendChild(el('span', 'card__name', svc.name));
-  const badge = el('span', 'card__badge st-' + state, '● ' + state +
-    (st.external ? ' EXT' : ''));
-  head.appendChild(badge);
+  p.badge = el('span', 'card__badge');
+  head.appendChild(p.badge);
   card.appendChild(head);
 
-  // meta: port / detail / pid / uptime
-  const meta = el('div', 'card__meta');
-  if (svc.port) meta.appendChild(el('span', 'k', ':' + svc.port));
-  (st.detail || []).forEach(d => meta.appendChild(el('span', null, d)));
-  if (st.pid) meta.appendChild(el('span', null, 'pid ' + st.pid));
-  if (st.uptime_s != null) meta.appendChild(el('span', null, 'up ' + fmtDur(st.uptime_s)));
-  if (st.latency_ms != null && state !== 'OFFLINE') {
-    meta.appendChild(el('span', null, st.latency_ms + 'ms'));
-  }
-  card.appendChild(meta);
+  // meta: port / detail / pid / uptime — không có gì tương tác được ở đây nên
+  // dựng lại nội dung của riêng nó là an toàn
+  p.meta = el('div', 'card__meta');
+  card.appendChild(p.meta);
 
-  if (state === 'NO_ENV' && (st.missing || []).length) {
-    const w = el('div', 'card__warn', '⚠ thiếu: ' + st.missing.join(', '));
-    w.title = st.missing.join('\n');
-    card.appendChild(w);
-  } else if (st.error && state === 'OFFLINE') {
-    card.appendChild(el('div', 'card__note', st.error));
-  } else if (svc.note) {
-    card.appendChild(el('div', 'card__note', svc.note));
-  }
+  // một dòng duy nhất cho cả ba trường hợp: thiếu env / lỗi / ghi chú tĩnh
+  p.note = el('div', 'card__note');
+  p.note.hidden = true;
+  card.appendChild(p.note);
 
   // thanh tiến trình cho card composite — 100% = mọi service đã lên
-  if (svc.kind === 'composite' && st.progress) {
-    const pr = st.progress;
-    const bar = el('div', 'prog' + (pr.pct >= 100 ? ' done' : ''));
-    const fill = el('i');
-    fill.style.width = pr.pct + '%';
-    bar.appendChild(fill);
-    const cap = el('div', 'prog__cap');
-    cap.appendChild(el('b', null, pr.pct + '%'));
-    cap.appendChild(el('span', null, `${pr.done}/${pr.total} service`));
-    if (pr.current) cap.appendChild(el('span', null, '→ ' + pr.current));
-    if (pr.label) cap.appendChild(el('span', 'mono', pr.label));
-    card.append(bar, cap);
+  if (svc.kind === 'composite') {
+    p.bar = el('div', 'prog');
+    p.fill = el('i');
+    p.bar.appendChild(p.fill);
+    p.cap = el('div', 'prog__cap');
+    p.bar.hidden = p.cap.hidden = true;
+    card.append(p.bar, p.cap);
   }
 
-  if (st.public_url) {
-    const line = el('div', 'card__url');
-    const a = el('a', null, st.public_url);
-    a.href = st.public_url; a.target = '_blank'; a.rel = 'noreferrer';
-    line.append(el('span', null, '🌐 '), a);
-    card.appendChild(line);
-  }
+  p.urlLine = el('div', 'card__url');
+  p.urlLink = el('a');
+  p.urlLink.target = '_blank';
+  p.urlLink.rel = 'noreferrer';
+  p.urlLine.append(el('span', null, '🌐 '), p.urlLink);
+  p.urlLine.hidden = true;
+  card.appendChild(p.urlLine);
 
   // hàng nút chính
   const btns = el('div', 'btns');
-  const running = ['ONLINE', 'DEGRADED', 'STARTING'].includes(state);
-
-  const unmet = (svc.depends_on || []).filter(d => stateOf(d) !== 'ONLINE');
-  // server tự tính (nó xác minh có process thật, không chỉ nhìn health —
-  // hybrid và vLLM dùng chung port nên health không phân biệt được)
-  const conflicts = st.blocked_by || [];
 
   if (svc.can_start) {
-    const b = el('button', 'go' + (svc.emphasis === 'primary' ? ' big' : ''), '▶  Chạy');
-    b.disabled = State.busy.has(svc.id) || unmet.length > 0 || conflicts.length > 0 ||
-      state === 'NO_ENV';
-    if (unmet.length) b.title = 'Cần ONLINE trước: ' + unmet.join(', ');
-    else if (conflicts.length) b.title = 'Đang chạy stack xung đột: ' + conflicts.join(', ');
-    else if (state === 'NO_ENV') b.title = 'Thiếu môi trường: ' + (st.missing || []).join(', ');
-    b.onclick = () => doStart(svc);
-    btns.appendChild(b);
+    p.bStart = el('button', 'go' + (svc.emphasis === 'primary' ? ' big' : ''), '▶  Chạy');
+    p.bStart.onclick = () => doStart(svc);
+    btns.appendChild(p.bStart);
   }
   if (svc.can_stop) {
-    const b = el('button', 'stop' + (svc.emphasis === 'primary' ? ' big' : ''), '■  Dừng');
-    b.disabled = State.busy.has(svc.id) || (!running && !st.pid);
-    b.onclick = () => act(svc.id, 'stop');
-    btns.appendChild(b);
+    p.bStop = el('button', 'stop' + (svc.emphasis === 'primary' ? ' big' : ''), '■  Dừng');
+    p.bStop.onclick = () => act(svc.id, 'stop');
+    btns.appendChild(p.bStop);
   }
   if (svc.can_start && svc.can_stop) {
-    const b = el('button', null, '↻  Khởi động lại');
-    b.disabled = State.busy.has(svc.id) || state === 'NO_ENV';
-    b.onclick = () => act(svc.id, 'restart');
-    btns.appendChild(b);
+    p.bRestart = el('button', null, '↻  Khởi động lại');
+    p.bRestart.onclick = () => act(svc.id, 'restart');
+    btns.appendChild(p.bRestart);
   }
   if (svc.log || svc.start_mode === 'script') {
-    const b = el('button', Logs.has(svc.id) ? 'on' : null, '▤  Log');
-    b.onclick = () => Logs.toggle(svc.id, svc.name);
-    btns.appendChild(b);
-    const p = el('button', 'ghost', '⇱  Cửa sổ');
-    p.onclick = () => window.open('/popout?log=' + encodeURIComponent(svc.id),
+    p.bLog = el('button', null, '▤  Log');
+    p.bLog.onclick = () => Logs.toggle(svc.id, svc.name);
+    btns.appendChild(p.bLog);
+    const pop = el('button', 'ghost', '⇱  Cửa sổ');
+    pop.onclick = () => window.open('/popout?log=' + encodeURIComponent(svc.id),
       'log_' + svc.id, 'width=960,height=640');
-    btns.appendChild(p);
+    btns.appendChild(pop);
   }
   card.appendChild(btns);
 
@@ -338,6 +332,100 @@ function renderCard(svc) {
   return card;
 }
 
+/** Ghi đè phần thay đổi được của một card. Không đụng tới cấu trúc DOM —
+    nhờ vậy bảng "⋯ Thêm" đang mở vẫn mở, hover/focus không mất. */
+function syncCard(card, svc) {
+  const p = card._p;
+  const st = State.status[svc.id] || {};
+  const state = st.state || 'UNKNOWN';
+  const busy = State.busy.has(svc.id);
+
+  card.className = 'card' + (svc.emphasis === 'primary' ? ' primary' : '') +
+    (busy ? ' busy' : '');
+
+  p.badge.className = 'card__badge st-' + state;
+  p.badge.textContent = '● ' + state + (st.external ? ' EXT' : '');
+
+  // meta là chuỗi text thuần: so chữ trước, khác mới dựng lại
+  const bits = [];
+  if (svc.port) bits.push(['k', ':' + svc.port]);
+  (st.detail || []).forEach(d => bits.push([null, d]));
+  if (st.pid) bits.push([null, 'pid ' + st.pid]);
+  if (st.uptime_s != null) bits.push([null, 'up ' + fmtDur(st.uptime_s)]);
+  if (st.latency_ms != null && state !== 'OFFLINE') bits.push([null, st.latency_ms + 'ms']);
+  const sig = JSON.stringify(bits);
+  if (p.metaSig !== sig) {
+    p.metaSig = sig;
+    p.meta.textContent = '';
+    bits.forEach(([cls, txt]) => p.meta.appendChild(el('span', cls, txt)));
+  }
+
+  // ghi chú: thiếu env > lỗi > note tĩnh
+  if (state === 'NO_ENV' && (st.missing || []).length) {
+    p.note.hidden = false;
+    p.note.className = 'card__warn';
+    p.note.textContent = '⚠ thiếu: ' + st.missing.join(', ');
+    p.note.title = st.missing.join('\n');
+  } else {
+    const text = (st.error && state === 'OFFLINE') ? st.error : (svc.note || '');
+    p.note.hidden = !text;
+    p.note.className = 'card__note';
+    p.note.title = '';
+    if (p.note.textContent !== text) p.note.textContent = text;
+  }
+
+  if (p.bar) {
+    const pr = st.progress;
+    p.bar.hidden = p.cap.hidden = !pr;
+    if (!pr) {
+      // dọn luôn ruột của node đã ẩn: để nội dung cũ nằm lại là mời một lỗi
+      // "hiện lại thấy số của lần trước" vào lần sửa sau
+      p.bar.className = 'prog';
+      p.fill.style.width = '';
+      p.cap.textContent = '';
+      p.capSig = null;
+    } else {
+      p.bar.className = 'prog' + (pr.pct >= 100 ? ' done' : '');
+      p.fill.style.width = pr.pct + '%';
+      const cbits = [['b', pr.pct + '%'], [null, `${pr.done}/${pr.total} service`]];
+      if (pr.current) cbits.push([null, '→ ' + pr.current]);
+      if (pr.label) cbits.push(['mono', pr.label]);
+      const csig = JSON.stringify(cbits);
+      if (p.capSig !== csig) {
+        p.capSig = csig;
+        p.cap.textContent = '';
+        cbits.forEach(([tag, txt]) =>
+          p.cap.appendChild(el(tag === 'b' ? 'b' : 'span', tag === 'b' ? null : tag, txt)));
+      }
+    }
+  }
+
+  p.urlLine.hidden = !st.public_url;
+  if (!st.public_url) {
+    p.urlLink.textContent = '';
+    p.urlLink.removeAttribute('href');
+  } else if (p.urlLink.textContent !== st.public_url) {
+    p.urlLink.textContent = st.public_url;
+    p.urlLink.href = st.public_url;
+  }
+
+  const running = ['ONLINE', 'DEGRADED', 'STARTING'].includes(state);
+  const unmet = (svc.depends_on || []).filter(d => stateOf(d) !== 'ONLINE');
+  // server tự tính (nó xác minh có process thật, không chỉ nhìn health —
+  // hybrid và vLLM dùng chung port nên health không phân biệt được)
+  const conflicts = st.blocked_by || [];
+
+  if (p.bStart) {
+    p.bStart.disabled = busy || unmet.length > 0 || conflicts.length > 0 || state === 'NO_ENV';
+    p.bStart.title = unmet.length ? 'Cần ONLINE trước: ' + unmet.join(', ')
+      : conflicts.length ? 'Đang chạy stack xung đột: ' + conflicts.join(', ')
+        : state === 'NO_ENV' ? 'Thiếu môi trường: ' + (st.missing || []).join(', ') : '';
+  }
+  if (p.bStop) p.bStop.disabled = busy || (!running && !st.pid);
+  if (p.bRestart) p.bRestart.disabled = busy || state === 'NO_ENV';
+  if (p.bLog) p.bLog.classList.toggle('on', Logs.has(svc.id));
+}
+
 function fmtDur(s) {
   s = Math.floor(s);
   if (s < 60) return s + 's';
@@ -353,7 +441,7 @@ async function doStart(svc) {
 
 async function act(id, what) {
   State.busy.add(id);
-  renderGroups();
+  syncAll();
   try {
     const res = await api(`/api/services/${id}/${what}`, { method: 'POST' });
     if (res.job_id) {
@@ -368,7 +456,7 @@ async function act(id, what) {
     toast(`${what} ${id}: ${e.message}`, 'err');
   } finally {
     State.busy.delete(id);
-    renderGroups();
+    syncAll();
   }
 }
 
@@ -477,6 +565,8 @@ async function deleteService(svc) {
 const Logs = {
   panes: new Map(),
   MAX: 4,
+  //: số dòng tối đa DỰNG RA DOM một lúc (buffer vẫn giữ 5000)
+  DRAW_MAX: 2000,
 
   has(id) { return this.panes.has(id); },
 
@@ -549,10 +639,13 @@ const Logs = {
       if (tools.classList.contains('show')) inp.focus();
       else { inp.value = ''; pane.grep = null; this._redraw(pane); }
     };
+    // Debounce: mỗi ký tự gõ vào đây kéo theo một lần dựng lại tới vài nghìn
+    // dòng. Gõ "ERROR" mà vẽ lại 5 lần thì ô nhập giật theo.
     inp.oninput = () => {
       try { pane.grep = inp.value ? new RegExp(inp.value, 'i') : null; inp.style.borderColor = ''; }
       catch { inp.style.borderColor = 'var(--red)'; return; }
-      this._redraw(pane);
+      clearTimeout(pane.grepTimer);
+      pane.grepTimer = setTimeout(() => this._redraw(pane), 120);
     };
     body.onscroll = () => {
       const atEnd = body.scrollHeight - body.scrollTop - body.clientHeight < 40;
@@ -571,7 +664,7 @@ const Logs = {
       .catch(() => {});
 
     this._connect(pane);
-    renderGroups();
+    syncAll();
   },
 
   _connect(pane) {
@@ -634,10 +727,20 @@ const Logs = {
   _redraw(pane) {
     pane.body.textContent = '';
     const frag = document.createDocumentFragment();
+    // Buffer giữ đủ 5000 dòng, nhưng CHỈ vẽ 2000 dòng cuối khớp bộ lọc: không
+    // ai cuộn ngược 5000 dòng trong một pane cao mấy trăm pixel, mà dựng chừng
+    // ấy node thì thấy giật ngay.
+    const matched = [];
     for (const l of pane.buffer) {
       if (pane.grep && !pane.grep.test(l)) continue;
-      frag.appendChild(this._row(l));
+      matched.push(l);
     }
+    const shown = matched.slice(-this.DRAW_MAX);
+    if (matched.length > shown.length) {
+      frag.appendChild(el('div', 'l l-panel',
+        `--- panel: ẩn ${matched.length - shown.length} dòng cũ hơn (còn trong bộ nhớ) ---`));
+    }
+    for (const l of shown) frag.appendChild(this._row(l));
     pane.body.appendChild(frag);
     if (pane.follow) this._toBottom(pane);
   },
@@ -669,25 +772,11 @@ const Logs = {
     p.root.remove();
     this.panes.delete(id);
     if (!this.panes.size) $('#logempty').style.display = '';
-    renderGroups();
+    syncAll();
   },
 
   closeAll() { [...this.panes.keys()].forEach(id => this.close(id)); },
 };
-
-// ── Telemetry ───────────────────────────────────────────────────────
-function renderTelemetry() {
-  const m = State.metrics;
-  if (!m || !$('#vram')) return;   // khu telemetry đã chuyển sang tab Biểu đồ
-  vramBlocks($('#vram'), m.gpu, m.gpu_error);
-  $('#wav-total').textContent = m.wav_total;
-  $('#wav-sub').textContent = `${m.wav_in_window} trong ${Math.round(m.window_s)}s`;
-  areaChart($('#chart-req'), m.requests_per_min, { errors: m.errors_per_min });
-  barsH($('#chart-bars'), m.by_service, stateOf);
-  $('#tele-foot').textContent =
-    `Window · ${Math.round(m.window_s)}s · ${m.total_in_window} requests parsed from logs` +
-    ` · ${m.probes_in_window} probe bị loại`;
-}
 
 function renderStrip() {
   const strip = $('#strip');
@@ -739,7 +828,7 @@ function connect() {
     // metrics cho thanh trạng thái trên cùng (GPU/VRAM).
     State.metrics = d.metrics || null;
     onIncidents(d.incidents);
-    renderGroups();
+    syncAll();
     renderStrip();
   };
   ws.onclose = () => {
@@ -774,7 +863,9 @@ loadConfig().then(connect).catch(e => toast('không tải được config: ' + e
 // Chỉ tạm dừng khi cửa sổ trình duyệt bị ẩn — đỡ tốn CPU lúc để nền.
 document.addEventListener('visibilitychange', () => {
   if (typeof ChartsTab === 'undefined') return;
-  document.hidden ? ChartsTab.stop() : ChartsTab.start();
+  // ChartsTab tự cân nhắc cả "có trong tầm nhìn không" — đừng ép start ở đây,
+  // không thì cuộn khuất mà quay lại tab là nó vẽ tiếp dù không ai nhìn.
+  ChartsTab.sync();
 });
 // KHÔNG start ở đây: app.js nạp TRƯỚC charts_tab.js nên ChartsTab còn undefined.
 // charts_tab.js tự khởi động ở cuối file của nó.

@@ -111,6 +111,11 @@ class HealthSpec:
     detail: list[str] = field(default_factory=list)
     public_url_from: str | None = None
     series: list[HealthSeries] = field(default_factory=list)
+    #: nhịp probe riêng cho service này, ghi đè `defaults.health_interval_s`.
+    #: Dùng khi /health của service ĐẮT — ví dụ Intent API ping Postgres trên
+    #: cloud mỗi lần bị hỏi, nên hỏi 3s/lần là bắn hàng chục nghìn query/ngày
+    #: ra ngoài internet chỉ để tô một badge.
+    interval_s: float | None = None
 
 
 @dataclass
@@ -360,7 +365,10 @@ def _parse_service(d: dict[str, Any]) -> Service:
             url=h.get("url"), rules=dict(h.get("rules") or {}),
             detail=list(h.get("detail") or []),
             public_url_from=h.get("public_url_from"),
+            interval_s=(float(h["interval_s"]) if h.get("interval_s") is not None else None),
         )
+        if health.interval_s is not None and health.interval_s <= 0:
+            raise ConfigError(f"[{d['id']}] health.interval_s phải > 0")
         for name, expr in health.rules.items():
             if name not in {"online", "degraded", "starting"}:
                 raise ConfigError(f"[{d['id']}] health rule lạ: {name}")

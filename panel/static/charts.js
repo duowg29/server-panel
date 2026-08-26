@@ -10,47 +10,8 @@ function esc(s) {
   return String(s).replace(/[&<>"]/g, c => ({ '&': '&amp;', '<': '&lt;', '>': '&gt;', '"': '&quot;' }[c]));
 }
 
-/** Area chart: requests/min. */
-function areaChart(el, series, opts = {}) {
-  const W = 600, H = 120, pad = { l: 34, r: 6, t: 8, b: 14 };
-  const data = series && series.length ? series : [0];
-  const max = Math.max(1, ...data, opts.min || 0);
-  const iw = W - pad.l - pad.r, ih = H - pad.t - pad.b;
-  const n = data.length;
-  const x = i => pad.l + (n === 1 ? iw / 2 : (i / (n - 1)) * iw);
-  const y = v => pad.t + ih - (v / max) * ih;
-
-  let line = '';
-  data.forEach((v, i) => { line += (i ? 'L' : 'M') + x(i).toFixed(1) + ' ' + y(v).toFixed(1) + ' '; });
-  const area = line + `L${x(n - 1).toFixed(1)} ${(pad.t + ih)} L${x(0).toFixed(1)} ${(pad.t + ih)} Z`;
-
-  // lưới ngang + nhãn trục
-  let grid = '';
-  for (let g = 0; g <= 2; g++) {
-    const v = (max / 2) * g, yy = y(v);
-    grid += `<line x1="${pad.l}" y1="${yy.toFixed(1)}" x2="${W - pad.r}" y2="${yy.toFixed(1)}"
-      stroke="var(--line)" stroke-dasharray="2 4" stroke-width="1"/>`;
-    grid += `<text x="${pad.l - 4}" y="${(yy + 3).toFixed(1)}" text-anchor="end"
-      fill="var(--fg-dim)" font-size="9">${Math.round(v)}</text>`;
-  }
-
-  // lớp lỗi (5xx) vẽ đè
-  let errPath = '';
-  if (opts.errors && opts.errors.some(v => v > 0)) {
-    opts.errors.forEach((v, i) => {
-      errPath += (i ? 'L' : 'M') + x(i).toFixed(1) + ' ' + y(v).toFixed(1) + ' ';
-    });
-    errPath = `<path d="${errPath}" fill="none" stroke="var(--red)" stroke-width="1.2"/>`;
-  }
-
-  el.innerHTML = `<svg viewBox="0 0 ${W} ${H}" preserveAspectRatio="xMidYMid meet" role="img"
-      aria-label="requests per minute">
-    ${grid}
-    <path d="${area}" fill="url(#areaFill)"/>
-    <path d="${line}" fill="none" stroke="var(--cyan)" stroke-width="1.4" filter="url(#glow)"/>
-    ${errPath}
-  </svg>`;
-}
+/* areaChart() và vramBlocks() đã bị xoá: chỉ renderTelemetry() gọi tới chúng,
+   mà hàm đó không còn ai gọi kể từ khi telemetry chuyển hẳn sang khu biểu đồ. */
 
 /** Bar chart ngang: req by service. Màu thanh = màu trạng thái service. */
 function barsH(el, rows, stateOf) {
@@ -78,37 +39,6 @@ function barsH(el, rows, stateOf) {
       font-size="10">${n}</text>`;
   });
   el.innerHTML = `<svg viewBox="0 0 ${W} ${H}" role="img" aria-label="requests by service">${out}</svg>`;
-}
-
-/** VRAM: thanh khối phân đoạn — hợp tông terminal hơn đồng hồ tròn. */
-function vramBlocks(el, gpus, gpuError) {
-  if (gpuError) {
-    el.innerHTML = `<div class="sub" style="color:var(--amber)">NO_GPU_DATA — ${esc(gpuError)}</div>`;
-    return;
-  }
-  if (!gpus || !gpus.length) {
-    el.innerHTML = '<div class="sub">đang lấy mẫu…</div>';
-    return;
-  }
-  const N = 24;
-  let out = '';
-  gpus.forEach(g => {
-    const frac = g.total_mb ? g.used_mb / g.total_mb : 0;
-    const on = Math.round(frac * N);
-    let blocks = '';
-    for (let i = 0; i < N; i++) {
-      const cls = i < on ? (frac > 0.85 ? 'on hot' : 'on') : '';
-      blocks += `<i class="${cls}"></i>`;
-    }
-    const gb = v => (v / 1024).toFixed(1);
-    out += `<div class="vram-row">
-        <span class="lbl">VRAM ${Math.round(frac * 100)}%</span>
-        <span class="blocks">${blocks}</span>
-      </div>
-      <div class="sub">${esc(g.name)} · ${gb(g.used_mb)}/${gb(g.total_mb)} GB đã dùng`
-      + ` · mức tải GPU ${g.util_pct}%</div>`;
-  });
-  el.innerHTML = out;
 }
 
 /* ══════════════════════════════════════════════════════════════════════
@@ -203,14 +133,33 @@ function _grid(f, yMax, unit, rows = 4) {
   return g;
 }
 
+/** Nhãn thời gian cho một điểm.
+
+    Dưới 1 giờ: nhãn tương đối ("-90s") — đang theo dõi trực tiếp thì "cách đây
+    bao lâu" là câu hỏi đúng. Từ 1 giờ trở lên: giờ đồng hồ. Nhãn tương đối ở
+    mốc 24 giờ ra "-1440p", không ai đọc được cái đó.
+
+    @param ago  giây tính từ điểm đó tới mép phải của chart
+    @param span tổng bề rộng cửa sổ, tính bằng giây
+    @param t    mốc tuyệt đối (giây epoch) của điểm đó */
+function _tLabel(ago, span, t) {
+  if (span >= 3600) {
+    const d = new Date(t * 1000);
+    return `${String(d.getHours()).padStart(2, '0')}:${String(d.getMinutes()).padStart(2, '0')}`;
+  }
+  if (ago <= 2) return 'bây giờ';
+  return ago >= 60 ? `-${Math.round(ago / 60)}p` : `-${ago}s`;
+}
+
 function _timeAxis(f, t0, bucket_s, n) {
   let g = '';
   const now = t0 + bucket_s * (n - 1);
+  const span = bucket_s * n;
   for (let i = 0; i <= 4; i++) {
     const idx = Math.round((n - 1) * i / 4);
     const xx = f.p.l + (idx / (n - 1)) * f.iw;
-    const ago = Math.round((now - (t0 + idx * bucket_s)));
-    const lbl = ago <= 2 ? 'bây giờ' : ago >= 60 ? `-${Math.round(ago / 60)}p` : `-${ago}s`;
+    const t = t0 + idx * bucket_s;
+    const lbl = _tLabel(Math.round(now - t), span, t);
     g += `<text x="${xx.toFixed(1)}" y="${f.H - 5}" text-anchor="middle"
       fill="var(--fg-dim)" font-size="10">${lbl}</text>`;
   }
@@ -228,6 +177,27 @@ function _refBands(f, t0, bucket_s, n, runs) {
     const x2 = f.p.l + Math.min(1, (r.t1 - t0) / (bucket_s * n)) * f.iw;
     g += `<rect x="${x1.toFixed(1)}" y="${f.p.t}" width="${Math.max(2, x2 - x1).toFixed(1)}"
       height="${f.ih}" fill="var(--violet)" opacity=".14"/>`;
+  }
+  return g;
+}
+
+/** Vạch dọc đánh dấu SỰ CỐ — vẽ trên mọi chart, cùng cơ chế với _refBands.
+
+    Có vạch này thì nhìn một đường bất kỳ là thấy ngay "chỗ gãy nằm ở đâu so với
+    số liệu" — trước đây sự cố và biểu đồ là hai thứ rời nhau, phải tự nhớ giờ
+    rồi tự đối chiếu. Đỏ = rơi xuống, xanh = trở lại. */
+function _incidentMarks(f, t0, bucket_s, n, marks) {
+  if (!marks || !marks.length) return '';
+  const span = bucket_s * n;
+  let g = '';
+  for (const m of marks) {
+    if (m.t < t0 || m.t > t0 + span) continue;
+    const xx = f.p.l + ((m.t - t0) / span) * f.iw;
+    const color = m.kind === 'up' ? 'var(--green)' : 'var(--red)';
+    g += `<line x1="${xx.toFixed(1)}" y1="${f.p.t}" x2="${xx.toFixed(1)}"
+      y2="${f.p.t + f.ih}" stroke="${color}" stroke-width="1"
+      stroke-dasharray="3 3" opacity=".55"><title>${esc(
+        (m.name || m.svc_id || '') + (m.kind === 'up' ? ' trở lại' : ' gãy'))}</title></line>`;
   }
   return g;
 }
@@ -300,6 +270,7 @@ function lineMulti(el, opts) {
   el.innerHTML = `<svg viewBox="0 0 ${f.W} ${f.H}" preserveAspectRatio="xMidYMid meet">
     ${_refBands(f, t0, bucket_s, n, runs)}
     ${_grid(f, yMax, unit)}
+    ${_incidentMarks(f, t0, bucket_s, n, opts.incidents)}
     ${_timeAxis(f, t0, bucket_s, n)}
     ${body}
   </svg>` + _legend(series);
@@ -311,8 +282,9 @@ function lineMulti(el, opts) {
         .map((s, k) => ({ s, k, v: (s.data || [])[idx] }))
         .filter(r => r.v != null);
       if (!rows.length) return '<b>không có dữ liệu</b>';
-      const ago = Math.round(t0 + bucket_s * (n - 1) - (t0 + idx * bucket_s));
-      return `<div class="t">${ago <= 2 ? 'bây giờ' : '-' + ago + 's'}</div>` + rows.map(r =>
+      const t = t0 + idx * bucket_s;
+      const ago = Math.round(t0 + bucket_s * (n - 1) - t);
+      return `<div class="t">${_tLabel(ago, bucket_s * n, t)}</div>` + rows.map(r =>
         `<div><i style="background:${r.s.color || SERIES_COLORS[r.k % SERIES_COLORS.length]}"></i>
          ${r.s.label}<b>${fmtNum(r.v, unit)}</b></div>`).join('');
     },
@@ -333,13 +305,17 @@ function stackedArea(el, opts) {
   if (!n) { el.innerHTML = '<div class="nodata">chưa có dữ liệu</div>'; return; }
 
   const f = _frame({ H: opts.H || 175 });
-  // cộng dồn, null coi là 0 CHO RIÊNG phép cộng (nhưng vẫn nhớ để tooltip báo đúng)
+  // Trong MỘT ô, null coi là 0 cho phép cộng dồn — không thì không xếp chồng
+  // được. Nhưng ô mà MỌI series đều null là khoảng trống thật (panel chưa chạy,
+  // hoặc cả stack đã tắt): chỗ đó phải để trống, không vẽ vùng tụt xuống 0.
   const cum = series.map(() => new Array(n).fill(0));
+  const has = new Array(n).fill(false);
   let peak = 0;
   for (let i = 0; i < n; i++) {
     let acc = 0;
     series.forEach((s, k) => {
       const v = (s.data || [])[i];
+      if (v != null) has[i] = true;
       acc += (v == null ? 0 : v);
       cum[k][i] = acc;
     });
@@ -349,19 +325,30 @@ function stackedArea(el, opts) {
   const x = i => f.p.l + (n === 1 ? f.iw / 2 : (i / (n - 1)) * f.iw);
   const y = v => f.p.t + f.ih - Math.min(1, v / yMax) * f.ih;
 
+  // các đoạn liên tiếp CÓ dữ liệu — mỗi đoạn một polygon riêng
+  const runs_ = [];
+  for (let i = 0; i < n; i++) {
+    if (!has[i]) continue;
+    if (runs_.length && runs_[runs_.length - 1][1] === i - 1) runs_[runs_.length - 1][1] = i;
+    else runs_.push([i, i]);
+  }
+
   let body = '';
   for (let k = series.length - 1; k >= 0; k--) {
     const color = series[k].color || SERIES_COLORS[k % SERIES_COLORS.length];
-    let d = `M${x(0).toFixed(1)} ${y(cum[k][0]).toFixed(1)} `;
-    for (let i = 1; i < n; i++) d += `L${x(i).toFixed(1)} ${y(cum[k][i]).toFixed(1)} `;
-    d += `L${x(n - 1).toFixed(1)} ${(f.p.t + f.ih)} L${x(0).toFixed(1)} ${(f.p.t + f.ih)} Z`;
-    body += `<path d="${d}" fill="${color}" opacity=".55"/>`;
-    body += `<path d="${d}" fill="none" stroke="${color}" stroke-width="1"/>`;
+    for (const [a, b] of runs_) {
+      let d = `M${x(a).toFixed(1)} ${y(cum[k][a]).toFixed(1)} `;
+      for (let i = a + 1; i <= b; i++) d += `L${x(i).toFixed(1)} ${y(cum[k][i]).toFixed(1)} `;
+      d += `L${x(b).toFixed(1)} ${(f.p.t + f.ih)} L${x(a).toFixed(1)} ${(f.p.t + f.ih)} Z`;
+      body += `<path d="${d}" fill="${color}" opacity=".55"/>`;
+      body += `<path d="${d}" fill="none" stroke="${color}" stroke-width="1"/>`;
+    }
   }
 
   el.innerHTML = `<svg viewBox="0 0 ${f.W} ${f.H}" preserveAspectRatio="xMidYMid meet">
     ${_refBands(f, t0, bucket_s, n, runs)}
     ${_grid(f, yMax, unit)}
+    ${_incidentMarks(f, t0, bucket_s, n, opts.incidents)}
     ${_timeAxis(f, t0, bucket_s, n)}
     ${body}
   </svg>` + _legend(series);
@@ -376,6 +363,94 @@ function stackedArea(el, opts) {
         `<div><i style="background:${r.s.color || SERIES_COLORS[r.k % SERIES_COLORS.length]}"></i>
          ${r.s.label}<b>${fmtNum(r.v, unit)}</b></div>`).join('')
         + `<div class="tot">tổng<b>${fmtNum(tot, unit)}</b></div>`;
+    },
+  });
+}
+
+/* ── Timeline trạng thái ──────────────────────────────────────────────
+   Mỗi service một dải; màu ô = trạng thái XẤU NHẤT trong ô đó.
+
+   Đây là biểu đồ trả lời câu "chiều nay lúc 3h chuyện gì xảy ra" — đúng câu hỏi
+   mà archive 72 giờ sinh ra để phục vụ, mà trước đây không chart nào trả lời
+   được: latency thì đứt đoạn, log thì đã trôi.
+
+   Thang số là config.SEVERITY ở backend (ONLINE 0 … NO_ENV 5), KHÔNG định nghĩa
+   lại ở đây. null = không có mẫu (panel chưa chạy) → để trống, đừng tô xanh cho
+   đẹp: nói "lúc đó ổn" trong khi thật ra là "lúc đó không biết" là nói dối. */
+const STATE_NAMES = ['ONLINE', 'STARTING', 'DEGRADED', 'UNKNOWN', 'OFFLINE', 'NO_ENV'];
+const STATE_COLORS = [
+  'var(--green)',    // 0 ONLINE
+  'var(--amber)',    // 1 STARTING
+  'var(--amber)',    // 2 DEGRADED
+  'var(--fg-dim)',   // 3 UNKNOWN
+  'var(--red)',      // 4 OFFLINE
+  'var(--violet)',   // 5 NO_ENV
+];
+
+function stateTimeline(el, opts) {
+  const { t0, bucket_s, series = [], incidents = null } = opts;
+  const n = series.reduce((m, s) => Math.max(m, (s.data || []).length), 0);
+  if (!n || !series.length) {
+    el.innerHTML = '<div class="nodata">chưa có dữ liệu trạng thái</div>';
+    return;
+  }
+
+  const rowH = 16, gap = 3, labelW = 92, W = 640, padR = 10, padT = 6;
+  const H = padT + series.length * (rowH + gap) + 16;
+  const iw = W - labelW - padR;
+  const cw = iw / n;
+
+  let body = '';
+  series.forEach((s, k) => {
+    const yy = padT + k * (rowH + gap);
+    body += `<text x="0" y="${yy + rowH - 4}" fill="var(--fg-dim)"
+      font-size="10">${esc(s.label)}</text>`;
+    // nền mờ cho cả dải: thấy ngay phần nào KHÔNG có dữ liệu
+    body += `<rect x="${labelW}" y="${yy}" width="${iw.toFixed(1)}" height="${rowH}"
+      fill="var(--line)" opacity=".25" rx="2"/>`;
+    // gộp các ô liền nhau cùng trạng thái thành một hình chữ nhật: 120 ô × 13
+    // service = 1560 rect mỗi lần vẽ, mà thực tế trạng thái đổi vài lần một ngày
+    const d = s.data || [];
+    let i = 0;
+    while (i < n) {
+      const v = d[i];
+      if (v == null) { i++; continue; }
+      let j = i;
+      while (j + 1 < n && d[j + 1] === v) j++;
+      const code = Math.max(0, Math.min(STATE_COLORS.length - 1, Math.round(v)));
+      const x1 = labelW + i * cw;
+      const w = Math.max(1, (j - i + 1) * cw);
+      body += `<rect x="${x1.toFixed(1)}" y="${yy}" width="${w.toFixed(1)}"
+        height="${rowH}" fill="${STATE_COLORS[code]}" opacity=".85" rx="1"
+        ><title>${esc(s.label + ' · ' + STATE_NAMES[code])}</title></rect>`;
+      i = j + 1;
+    }
+  });
+
+  const f = { W, H, p: { l: labelW, r: padR, t: padT, b: 14 },
+    iw, ih: series.length * (rowH + gap) };
+  el.innerHTML = `<svg viewBox="0 0 ${W} ${H}" preserveAspectRatio="xMidYMid meet">
+    ${body}
+    ${_incidentMarks(f, t0, bucket_s, n, incidents)}
+    ${_timeAxis(f, t0, bucket_s, n)}
+  </svg>` + '<div class="legend">' + [0, 1, 2, 4, 5].map(c =>
+    `<span><i style="background:${STATE_COLORS[c]}"></i>${STATE_NAMES[c]}</span>`).join('')
+    + '<span><i style="background:var(--line)"></i>không có mẫu</span></div>';
+
+  _attachHover(el, {
+    n, f,
+    render: idx => {
+      const rows = series
+        .map(s => ({ s, v: (s.data || [])[idx] }))
+        .filter(r => r.v != null);
+      if (!rows.length) return '<b>không có mẫu ở thời điểm này</b>';
+      const t = t0 + idx * bucket_s;
+      const ago = Math.round(t0 + bucket_s * (n - 1) - t);
+      return `<div class="t">${_tLabel(ago, bucket_s * n, t)}</div>` + rows.map(r => {
+        const c = Math.max(0, Math.min(5, Math.round(r.v)));
+        return `<div><i style="background:${STATE_COLORS[c]}"></i>${r.s.label}
+          <b>${STATE_NAMES[c]}</b></div>`;
+      }).join('');
     },
   });
 }
@@ -423,8 +498,10 @@ function scatterPoints(el, points, opts = {}) {
   points.forEach(p => {
     const xx = f.p.l + Math.min(1, Math.max(0, (p.t - t0) / span)) * f.iw;
     const yy = f.p.t + f.ih - Math.min(1, (p.y || 0) / yMax) * f.ih;
+    // esc() BẮT BUỘC ở đây: nhãn ghép từ method + uri của ngrok, tức là do bất
+    // kỳ ai gọi được URL public sinh ra. Một dấu `<` trong URI là hỏng SVG.
     body += `<circle cx="${xx.toFixed(1)}" cy="${yy.toFixed(1)}" r="${opts.r || 3}"
-      fill="${colorOf(p)}" opacity=".8"><title>${(p.label || '').replace(/"/g, '')}</title></circle>`;
+      fill="${colorOf(p)}" opacity=".8"><title>${esc(p.label || '')}</title></circle>`;
   });
 
   el.innerHTML = `<svg viewBox="0 0 ${f.W} ${f.H}" preserveAspectRatio="xMidYMid meet">

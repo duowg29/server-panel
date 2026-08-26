@@ -34,11 +34,19 @@ rồi mở lại, nó tự nhận diện (`reconcile`) các service đang chạy
 ## Kiểm tra nhanh (không cần bootstrap)
 
 ```bash
-python3 selftest.py     # hoặc: bash run.sh --check
+bash run.sh --check     # backend + frontend
+python3 selftest.py     # chỉ backend
+node selftest_ui.js     # chỉ frontend (không cần npm install)
 ```
 
-Test thật, không mock: spawn process detached, adopt lại bằng pid file, stop bằng
-pkill, tail log qua rotate/truncate, parse access log, đọc `nvidia-smi`.
+Backend test thật, không mock: spawn process detached, adopt lại bằng pid file, stop
+bằng pkill, tail log qua rotate/truncate, parse access log, đọc `nvidia-smi`, ghi/đọc
+lại archive SQLite kèm cache.
+
+Frontend chạy trên một DOM shim viết tay (không jsdom, không dependency npm — panel
+không có build step). Nó khoá hai thứ dễ vỡ nhất: card cập nhật tại chỗ phải cho ra
+đúng cái mà dựng lại từ đầu cho ra, và biểu đồ không được bịa dữ liệu ở chỗ không có
+mẫu. Máy không có `node` thì `run.sh --check` bỏ qua phần này.
 
 ---
 
@@ -61,6 +69,7 @@ Mỗi mục trong `services:` mô tả một thứ chạy được.
 | `stop.mode` | `pkill` (theo `pattern`), `script`, hoặc `none` |
 | `restart.on_crash` | tự bật lại khi chết — **mặc định tắt**, xem mục dưới |
 | `health.url` + `health.rules` | quyết định badge ONLINE/DEGRADED/STARTING |
+| `health.interval_s` | nhịp probe riêng, ghi đè `defaults.health_interval_s` — dùng khi `/health` đắt |
 | `health.detail` | dòng thông tin nhỏ dưới tên, dùng `{json.a.b}` |
 | `depends_on` | chưa ONLINE thì disable nút Start |
 | `conflicts_with` | đang chạy thì chặn Start (hybrid vs vLLM đụng port) |
@@ -169,7 +178,15 @@ qua restart panel. Bỏ qua mọi thứ đi qua UNKNOWN/STARTING: panel vừa m�
 gộp xuống SQLite (`data/series.db`, giữ 72 giờ, ô 30s). Nút *1 giờ / 6 giờ / 24 giờ* ở
 chân trang biểu đồ đọc từ đĩa — dòng trạng thái nói rõ đang xem nguồn nào, vì hai nguồn
 mịn khác nhau. Gộp bằng đúng hàm mà series đó dùng (probe latency lấy `max` để không
-làm phẳng mất spike).
+làm phẳng mất spike). Mốc càng rộng thì panel poll càng thưa (24 giờ: 30s/lần) — dữ
+liệu trên đĩa chỉ đổi mỗi 30 giây, hỏi dày hơn chỉ tốn công quét lại bảng.
+
+**Trạng thái theo thời gian.** Mỗi service một dải màu ONLINE/DEGRADED/OFFLINE, chạy
+suốt cửa sổ đang xem và xem lại được 72 giờ. Đây là chỗ trả lời câu "chiều nay lúc 3h
+chuyện gì xảy ra". Ô gộp lấy trạng thái **xấu nhất** trong ô: một ô 30 phút có 10 giây
+OFFLINE thì cả ô đó là OFFLINE, chứ lấy trung bình là làm mất dấu đúng thứ đang tìm.
+Dải trống = panel chưa chạy lúc đó, không phải "lúc đó ổn". Mốc sự cố còn được vẽ
+thành vạch dọc đứt trên mọi biểu đồ, để đối chiếu chỗ gãy với số liệu.
 
 **Đĩa trống** được đo mỗi 30s cho phân vùng chứa `{root}` và `{log_dir}` (cùng phân vùng
 thì chỉ đo một lần), hiện ở ô KPI và báo sự cố khi xuống dưới `PANEL_DISK_WARN_GB`.
@@ -196,6 +213,16 @@ một service chết đi chết lại là việc của con người, không ph�
 
 - **Hybrid và vLLM đụng port** (8001/8002/8088) nên không chạy song song. `conflicts_with`
   khiến panel chặn Start thay vì để bạn tự nhớ.
+- **Chat chạy GPU, embed chạy CPU.** `gpu_chat` :8002 nạp Qwen3-8B 4-bit (~5.5 GB VRAM)
+  cạnh TinySpeech (~7 GB) trên card 16 GB; `cpu_inf` :8001 vẫn lo phần embed. Panel truyền
+  `VLLM_CHAT_URL=:8002` cho Intent API **qua biến môi trường**, KHÔNG sửa `.env` của repo
+  server — biến môi trường thắng file `.env`, nên `bash deploy/scripts/start_hybrid.sh`
+  chạy tay vẫn giữ nguyên hành vi cũ (chat về CPU :8001). Sửa `.env` sang `:8002` sẽ làm
+  script đó tự mâu thuẫn: nó cố tình giết `gpu_chat` rồi ép intent quay lại `:8001`.
+- **Đừng probe `/health` của Intent API dày.** Endpoint đó chạy `SELECT 1` ra Supabase
+  **cloud** mỗi lần bị gọi (~1.6s, đi ra internet). Badge chỉ cần `status` + `cache.ready`,
+  không cần `db` — nên `intent` khai `health.interval_s: 30`. Kèm với việc poller gộp
+  probe theo URL, số query rơi từ ~57.600 xuống ~2.880 mỗi ngày.
 - **Số request lấy từ access log của uvicorn**, mà dòng đó **không có timestamp** — event
   được đóng dấu lúc panel đọc được. Sai số dưới ~1s, đủ cho dashboard, **đừng dùng để đo
   latency**. Lúc khởi động parser nhảy tới cuối file nên chart bắt đầu trống rồi đầy dần.
@@ -214,16 +241,33 @@ một service chết đi chết lại là việc của con người, không ph�
 ## Cấu trúc
 
 ```
-bootstrap.sh  run.sh  requirements.txt  services.yaml  selftest.py
+bootstrap.sh  run.sh  requirements.txt  services.yaml  selftest.py  selftest_ui.js
 panel/
   main.py        FastAPI: REST + 2 WebSocket + static, middleware Origin
   config.py      YAML → dataclass, validate, safe rule evaluator, ghi atomic
   supervisor.py  spawn detached, stop, reconcile PID, job one-shot
   health.py      poller + phân loại trạng thái + roll-up composite
   logs.py        backfill + tail -F (rotate/truncate/chưa-tồn-tại)
-  metrics.py     nvidia-smi + parser access log
+  metrics.py     parser access log (GPU lấy từ sampler, xem dưới)
+  sampler.py     nguồn DUY NHẤT gọi nvidia-smi; /proc, đĩa, ngrok
   series.py      time-series trong RAM (10 phút, nhịp 2s)
-  archive.py     gộp 30s rồi lưu SQLite, giữ 72 giờ
+  archive.py     gộp 30s rồi lưu SQLite, giữ 72 giờ, có cache TTL
   incidents.py   chụp log lúc service gãy + cảnh báo
-  static/        index.html popout.html panel.css app.js charts.js
+  static/        index.html popout.html panel.css app.js charts.js charts_tab.js
 ```
+
+### Vài quyết định dễ vô tình phá
+
+- **Không gọi sqlite thẳng trong `async def`.** Quét bảng archive 72 giờ mất tới hơn
+  một giây; nằm trên event loop là nó đứng cả `/ws/status` lẫn stream log. Mọi lời gọi
+  đi qua `asyncio.to_thread`, và `resample()`/`stats()` tự cache theo TTL.
+- **Chỉ MỘT nơi gọi `nvidia-smi`** là `sampler.py`. `metrics.gpu_series()` đọc lại từ
+  `SeriesStore`. Thêm một chỗ gọi nữa là fork thêm một tiến trình mỗi 2 giây, mãi mãi.
+- **Card không được dựng lại mỗi frame.** `renderGroups()` chỉ chạy khi config đổi;
+  frame trạng thái gọi `syncAll()`. Dựng lại làm sập bảng "⋯ Thêm" đang mở và mất
+  hover/focus 2 giây một lần. `selftest_ui.js` khoá điều này lại.
+- **`null` là KHÔNG CÓ DỮ LIỆU, không phải 0.** Đúng với cả đường, vùng chồng lẫn dải
+  timeline: chỗ không có mẫu phải để trống. Tô xanh cho liền mạch là nói "lúc đó ổn"
+  trong khi sự thật là "lúc đó không biết".
+- **Mọi thứ đến từ ngoài phải `esc()`** trước khi vào `innerHTML`. URI request qua
+  ngrok do bất kỳ ai gọi được URL public sinh ra.

@@ -37,6 +37,15 @@ BUCKET_S = 30.0
 RETENTION_S = 72 * 3600.0
 #: dọn rác mỗi giờ
 VACUUM_EVERY_S = 3600.0
+#: stats() quét cả bảng (COUNT + COUNT DISTINCT). Đo trên 1.08M dòng: 450ms.
+#: Nó chỉ để hiện ở chân trang biểu đồ nên tươi tới giây là thừa.
+STATS_TTL_S = 60.0
+#: Trần TTL của cache resample. Ô 30s là độ mịn nhỏ nhất trên đĩa, nên hỏi lại
+#: dày hơn ngần này thì chắc chắn nhận về đúng câu trả lời cũ.
+RESAMPLE_TTL_MAX_S = 30.0
+RESAMPLE_TTL_MIN_S = 2.0
+#: chặn cache phình khi người dùng bấm qua lại các mốc cửa sổ
+RESAMPLE_CACHE_MAX = 8
 
 
 class SeriesArchive:
@@ -56,6 +65,9 @@ class SeriesArchive:
         self._lock = threading.Lock()
         self.db: sqlite3.Connection | None = None
         self.error: str | None = None
+        #: (ts, kết quả) — xem STATS_TTL_S / RESAMPLE_TTL_MAX_S
+        self._stats_cache: tuple[float, dict[str, Any]] | None = None
+        self._resample_cache: dict[tuple, tuple[float, dict[str, Any]]] = {}
         self._open()
 
     def _open(self) -> None:
@@ -119,6 +131,9 @@ class SeriesArchive:
             return 0
 
         self._last_flush = end
+        # Vừa có ô mới đóng → mọi câu trả lời đã cache đều cũ.
+        self._resample_cache.clear()
+        self._stats_cache = None
         return len(rows)
 
     def vacuum(self, now: float | None = None) -> int:
@@ -140,6 +155,20 @@ class SeriesArchive:
             return 0
 
     # ── đọc ───────────────────────────────────────────────────────────
+    def names(self, since: float, now: float | None = None) -> list[str]:
+        """Tên series có dữ liệu từ mốc `since`. Rẻ hơn hẳn resample chỉ để lấy khoá."""
+        if self.db is None:
+            return []
+        try:
+            with self._lock:
+                cur = self.db.execute(
+                    "SELECT DISTINCT name FROM points WHERE ts >= ?", (int(since),)
+                )
+                return sorted(r[0] for r in cur.fetchall())
+        except sqlite3.Error as e:
+            log.warning("đọc tên series lỗi: %s", e)
+            return []
+
     def resample(
         self,
         names: Iterable[str] | None = None,
@@ -147,7 +176,11 @@ class SeriesArchive:
         buckets: int = 120,
         now: float | None = None,
     ) -> dict[str, Any]:
-        """Cùng khuôn trả về với SeriesStore.resample để UI không phải phân biệt."""
+        """Cùng khuôn trả về với SeriesStore.resample để UI không phải phân biệt.
+
+        Có cache TTL: cửa sổ càng rộng thì ô càng to, mà hỏi lại dày hơn nửa ô
+        thì chắc chắn nhận đúng câu trả lời cũ — chỉ tốn một lần quét bảng.
+        """
         now = time.time() if now is None else now
         buckets = max(2, min(int(buckets), 600))
         bucket_s = max(window_s / buckets, self.bucket_s)
@@ -156,6 +189,15 @@ class SeriesArchive:
         empty = {"t0": t0, "bucket_s": bucket_s, "n": buckets, "series": {}}
         if self.db is None:
             return empty
+
+        wanted_key = tuple(sorted(names)) if names is not None else None
+        ck = (wanted_key, round(window_s, 3), buckets)
+        ttl = min(RESAMPLE_TTL_MAX_S, max(RESAMPLE_TTL_MIN_S, bucket_s / 2))
+        hit = self._resample_cache.get(ck)
+        # `t0` nằm trong khoá gián tiếp qua window/buckets, nhưng nó trôi theo
+        # thời gian — nên vẫn phải so mốc, không chỉ so tuổi cache.
+        if hit is not None and now - hit[0] < ttl and hit[1]["t0"] == t0:
+            return hit[1]
 
         wanted = list(names) if names is not None else None
         try:
@@ -192,9 +234,22 @@ class SeriesArchive:
             fn = AGGS.get(agg_for(name), AGGS["last"])
             out[name] = [round(fn(s), 3) if s else None for s in arr]
 
-        return {"t0": t0, "bucket_s": bucket_s, "n": buckets, "series": out}
+        result = {"t0": t0, "bucket_s": bucket_s, "n": buckets, "series": out}
+        if len(self._resample_cache) >= RESAMPLE_CACHE_MAX:
+            oldest = min(self._resample_cache, key=lambda k: self._resample_cache[k][0])
+            self._resample_cache.pop(oldest, None)
+        self._resample_cache[ck] = (now, result)
+        return result
 
-    def stats(self) -> dict[str, Any]:
+    def stats(self, now: float | None = None) -> dict[str, Any]:
+        """Số dòng / số series / khoảng thời gian đang giữ.
+
+        Quét cả bảng, nên cache STATS_TTL_S: đây là dòng chữ ở chân trang biểu
+        đồ, không phải số cần tươi từng giây.
+        """
+        now = time.time() if now is None else now
+        if self._stats_cache is not None and now - self._stats_cache[0] < STATS_TTL_S:
+            return self._stats_cache[1]
         if self.db is None:
             return {"ok": False, "error": self.error}
         try:
@@ -206,7 +261,7 @@ class SeriesArchive:
         except (sqlite3.Error, OSError) as e:
             return {"ok": False, "error": str(e)}
         points, series, first, last = rows
-        return {
+        out = {
             "ok": True,
             "points": points or 0,
             "series": series or 0,
@@ -217,6 +272,8 @@ class SeriesArchive:
             "db_mb": round(size / 1024**2, 2),
             "path": str(self.path),
         }
+        self._stats_cache = (now, out)
+        return out
 
     def close(self) -> None:
         if self.db is not None:

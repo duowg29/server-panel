@@ -17,10 +17,13 @@ Ba quyết định định hình file này:
 
 from __future__ import annotations
 
+import logging
 import math
 import time
 from collections import deque
 from typing import Any, Iterable
+
+log = logging.getLogger("panel.series")
 
 #: giữ 10 phút
 RETENTION_S = 600.0
@@ -73,6 +76,10 @@ DEFAULT_AGG = {
     # mỗi mẫu req.* ĐÃ LÀ tốc độ (lần/phút) → gộp bằng trung bình.
     # "sum" sẽ nhân đôi khi một ô chứa nhiều mẫu.
     "req.": "mean",
+    # state.* là mã severity (xem config.SEVERITY): gộp phải lấy XẤU NHẤT.
+    # Một ô 30 phút có 10 giây OFFLINE thì cả ô đó là OFFLINE — lấy trung bình
+    # sẽ làm phẳng mất đúng thứ đang đi tìm.
+    "state.": "max",
 }
 
 
@@ -88,6 +95,9 @@ class SeriesStore:
     def __init__(self, retention_s: float = RETENTION_S) -> None:
         self.retention_s = retention_s
         self._data: dict[str, deque[Point]] = {}
+        #: số series bị từ chối vì chạm MAX_SERIES — im lặng bỏ là mất dữ liệu
+        #: mà không ai biết, nên phải đếm và nói ra
+        self.dropped: set[str] = set()
         #: thứ KHÔNG phải series: tên GPU, nproc, MemTotal, pid theo service,
         #: mốc các lần bắn tải…
         self.meta: dict[str, Any] = {}
@@ -98,6 +108,12 @@ class SeriesStore:
         dq = self._data.get(name)
         if dq is None:
             if len(self._data) >= MAX_SERIES:
+                if name not in self.dropped:
+                    self.dropped.add(name)
+                    log.warning(
+                        "chạm trần %d series — BỎ %r và mọi series mới sau đó. "
+                        "Thêm service thì nâng MAX_SERIES.", MAX_SERIES, name,
+                    )
                 return
             dq = self._data[name] = deque(maxlen=MAX_POINTS)
         dq.append((ts, None if value is None else float(value)))
@@ -180,4 +196,6 @@ class SeriesStore:
         return {
             "series": len(self._data),
             "points": sum(len(d) for d in self._data.values()),
+            "max_series": MAX_SERIES,
+            "dropped": len(self.dropped),
         }

@@ -710,6 +710,11 @@ button.big    { min-height: 38px; font-size: 13.5px; padding: .4rem 1.1rem; }
   min-width: 0;
 }
 .chart.wide { grid-column: 1 / -1; }
+/* .wide đứng NGOÀI .chartgrid (timeline trạng thái, bảng tiến trình) thì
+   grid-column không có tác dụng — cần khoảng cách riêng để không dính vào lưới */
+.sec > .chart.wide { margin: .7rem 0; }
+/* Timeline: nhãn service đọc như tên id nên để mono cho thẳng cột */
+#ch-svc_state .chart__body svg { font-family: var(--font-mono); }
 .chart h3 {
   margin: 0 0 .6rem;
   font-size: 12.5px;

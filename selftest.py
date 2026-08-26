@@ -22,7 +22,11 @@ sys.path.insert(0, str(Path(__file__).resolve().parent))
 
 from panel import config as cfgmod  # noqa: E402
 from panel.logs import LogTailer, backfill  # noqa: E402
+from panel.archive import SeriesArchive  # noqa: E402
+from panel.health import HealthPoller  # noqa: E402
 from panel.metrics import MetricsCollector  # noqa: E402
+from panel.sampler import Sampler  # noqa: E402
+from panel.series import SeriesStore  # noqa: E402
 from panel.supervisor import Supervisor, _pid_alive  # noqa: E402
 
 PASS, FAIL = "\033[32m  ok \033[0m", "\033[31mFAIL \033[0m"
@@ -255,7 +259,8 @@ async def test_logs(tmp: Path) -> None:
 
 async def test_metrics(tmp: Path, cfg: cfgmod.Config) -> None:
     print("\n== metrics ==")
-    mc = MetricsCollector(cfg)
+    store = SeriesStore()
+    mc = MetricsCollector(cfg, store)
     log = Path(cfg.services["dummy_http"].log)
     log.parent.mkdir(parents=True, exist_ok=True)
     log.write_text("")
@@ -277,11 +282,17 @@ async def test_metrics(tmp: Path, cfg: cfgmod.Config) -> None:
     check("đếm lỗi 5xx", sum(s["errors_per_min"]) > 0)
     check("by_service", s["by_service"] and s["by_service"][0][0] == "dummy_http")
 
-    await mc._sample_gpu()
+    # nvidia-smi CHỈ được gọi ở Sampler — metrics đọc lại từ store. Trước đây
+    # cả hai cùng gọi, tức là fork nvidia-smi hai lần song song mãi mãi.
+    sup = Supervisor(cfg)
+    sampler = Sampler(cfg, sup, store, mc)
+    await sampler._sample_gpu(time.time())
     if shutil.which("nvidia-smi"):
         g = mc.gpu_series()
-        check("đọc nvidia-smi", bool(g) and g[0]["total_mb"] > 0,
+        check("đọc nvidia-smi qua Sampler", bool(g) and g[0]["total_mb"] > 0,
               f"{g[0]['name']} {g[0]['used_mb']}/{g[0]['total_mb']}MiB" if g else "trống")
+        check("metrics đọc GPU từ store, không tự gọi smi",
+              not hasattr(mc, "_sample_gpu"))
     else:
         check("nvidia-smi vắng → không crash", mc.gpu_error is not None, str(mc.gpu_error))
 
@@ -334,6 +345,164 @@ def test_parity() -> None:
         )
 
 
+def test_series_archive(tmp: Path) -> None:
+    """Kho số liệu: gộp phải giữ được thứ đang đi tìm, cache không được nói dối."""
+    print("\n== series + archive ==")
+    now = time.time()
+
+    store = SeriesStore()
+    # Trạng thái: một ô chứa cả ONLINE (0) lẫn OFFLINE (4) thì phải ra OFFLINE.
+    # Lấy trung bình sẽ ra 2 = DEGRADED — sai, và đúng loại sai làm mất dấu sự cố.
+    for i in range(10):
+        store.push("state.svc", 4.0 if i == 5 else 0.0, now - 10 + i)
+    out = store.resample(["state.svc"], window_s=20, buckets=2, now=now)
+    check("state.* gộp bằng XẤU NHẤT", max(v for v in out["series"]["state.svc"] if v is not None) == 4,
+          str(out["series"]["state.svc"]))
+
+    # Trần series: bỏ thì phải đếm và kêu, không được im lặng
+    small = SeriesStore()
+    from panel import series as series_mod
+    keep = series_mod.MAX_SERIES
+    series_mod.MAX_SERIES = 2
+    try:
+        for i in range(5):
+            small.push(f"x{i}", 1.0, now)
+    finally:
+        series_mod.MAX_SERIES = keep
+    check("chạm trần series thì đếm được, không im lặng",
+          small.stats()["dropped"] == 3, str(small.stats()))
+
+    # Archive: ô đã đóng ghi xuống đĩa, đọc lại ra đúng số
+    arc = SeriesArchive(tmp / "series.db", bucket_s=30.0, retention_s=3600.0)
+    src = SeriesStore()
+    base = (now // 30) * 30 - 300
+    for i in range(20):
+        src.push("probe.x.latency_ms", 100.0 + i, base + i * 10)
+    arc.flush(src, now=now)
+    got = arc.resample(["probe.x.latency_ms"], window_s=600, buckets=20, now=now)
+    vals = [v for v in got["series"].get("probe.x.latency_ms", []) if v is not None]
+    check("archive ghi rồi đọc lại được", bool(vals), str(vals[:4]))
+    # probe.* gộp bằng max — spike mới là thứ đáng chú ý
+    check("archive gộp probe.* bằng max", max(vals) == 119.0 if vals else False,
+          str(max(vals) if vals else None))
+
+    # Cache: lần hai phải là CÙNG một object (không quét lại bảng)…
+    a = arc.resample(["probe.x.latency_ms"], window_s=600, buckets=20, now=now)
+    b = arc.resample(["probe.x.latency_ms"], window_s=600, buckets=20, now=now)
+    check("resample có cache (lần hai không truy vấn lại)", a is b)
+    # …nhưng flush ô mới thì cache phải hết hiệu lực, không được trả số cũ
+    src.push("probe.x.latency_ms", 999.0, now - 1)
+    arc.flush(src, now=now + 60)
+    c = arc.resample(["probe.x.latency_ms"], window_s=600, buckets=20, now=now)
+    check("flush xoá cache (không trả số cũ)", c is not a)
+
+    st = arc.stats(now=now)
+    check("archive.stats đếm được điểm", st["ok"] and st["points"] > 0, str(st.get("points")))
+    check("archive.stats có cache", arc.stats(now=now + 1) is st)
+    check("archive.names lọc theo mốc", "probe.x.latency_ms" in arc.names(now - 3600))
+    arc.close()
+
+
+async def test_health_dedup(tmp: Path) -> None:
+    """Hai chỗ tốn tài nguyên Supabase, cả hai đều phải khoá lại bằng test.
+
+    1. Nhiều service khai CÙNG một health.url thì chỉ được GET một lần.
+    2. `health.interval_s` phải ghi đè nhịp mặc định.
+
+    /health của Intent API ping Postgres trên cloud mỗi lần bị hỏi, nên hai lỗi
+    này cộng lại từng bắn ~57.600 query/ngày ra internet chỉ để tô một badge.
+    """
+    print("\n== health: gộp probe + nhịp riêng ==")
+    cfg_p = tmp / "dedup.yaml"
+    cfg_p.write_text(textwrap.dedent(f"""
+    version: 1
+    defaults: {{ root: {tmp}, log_dir: {tmp}/logs, health_interval_s: 3 }}
+    groups: [{{ id: t, label: T }}, {{ id: h, label: H, hidden: true }}]
+    services:
+      - id: a
+        name: A
+        group: t
+        health: {{ url: "http://127.0.0.1:9/health", interval_s: 30 }}
+      - id: a_alt
+        name: A alt
+        group: h
+        health: {{ url: "http://127.0.0.1:9/health", interval_s: 30 }}
+      - id: b
+        name: B
+        group: t
+        health: {{ url: "http://127.0.0.1:10/health" }}
+    """))
+    cfg = cfgmod.load(cfg_p)
+    check("parse được health.interval_s", cfg.services["a"].health.interval_s == 30.0,
+          str(cfg.services["a"].health.interval_s))
+
+    poller = HealthPoller(cfg, Supervisor(cfg))
+    calls: list[str] = []
+
+    async def fake_fetch(url: str):
+        calls.append(url)
+        from panel.health import Fetched
+        return Fetched(payload={"status": "ok"}, latency_ms=5)
+
+    poller._fetch_one = fake_fetch          # type: ignore[assignment]
+    await poller.tick()
+
+    # a và a_alt dùng chung URL -> đúng MỘT lần gọi cho URL đó
+    check("cùng URL chỉ GET một lần", calls.count("http://127.0.0.1:9/health") == 1,
+          f"gọi {calls.count('http://127.0.0.1:9/health')} lần")
+    check("URL khác vẫn được gọi riêng", "http://127.0.0.1:10/health" in calls)
+    check("cả hai service dùng chung kết quả đều có trạng thái",
+          poller.state_of("a") != "UNKNOWN" and poller.state_of("a_alt") != "UNKNOWN",
+          f"a={poller.state_of('a')} a_alt={poller.state_of('a_alt')}")
+
+    # nhịp: a chờ 30s, b chờ 3s
+    now = time.time()
+    wait_a = poller._next_at["a"] - now
+    wait_b = poller._next_at["b"] - now
+    check("interval_s riêng được tôn trọng", 29 <= wait_a <= 31, f"{wait_a:.1f}s")
+    check("service khác vẫn dùng nhịp mặc định", 2 <= wait_b <= 4, f"{wait_b:.1f}s")
+
+    # tick lại ngay: không service nào tới hạn -> không GET thêm
+    calls.clear()
+    await poller.tick()
+    check("chưa tới hạn thì không gọi lại", calls == [], str(calls))
+
+
+def test_member_death_signal(tmp: Path) -> None:
+    """Service `mode: script` KHÔNG được coi là chết chỉ vì panel không giữ PID.
+
+    ngrok chạy bằng script nên panel chỉ có job, `alive` luôn False. Điều kiện
+    cũ ("OFFLINE và không alive") biến mọi lần probe đầu tiên — 2 giây sau khi
+    chạy, lúc ngrok chưa đăng ký tunnel nào — thành "process đã chết", làm gãy
+    cả chuỗi khởi động composite trong khi ngrok vẫn sống.
+    """
+    print("\n== tín hiệu 'member đã chết' ==")
+    from panel.main import _member_really_dead
+    from panel.supervisor import Job
+
+    cfg = cfgmod.load(make_config(tmp))
+    sup = Supervisor(cfg)
+
+    # mode: script — job đang chạy, chưa lên health: CHƯA phải chết
+    sup.jobs["j1"] = Job(id="j1", svc_id="ngrok", kind="start", pid=1,
+                         log_path=str(tmp / "j.log"), started_at=time.time(),
+                         label="start ngrok")
+    sup.jobs["j1"].rc = None
+    check("job còn chạy → chưa kết luận chết", not _member_really_dead(sup, "ngrok", "j1"))
+
+    # job xong rc=0 — script đã làm xong việc, service lên chậm là chuyện khác
+    sup.jobs["j1"].rc = 0
+    check("job xong rc=0 → chưa phải chết", not _member_really_dead(sup, "ngrok", "j1"))
+
+    # job xong rc!=0 — đây mới là chết thật
+    sup.jobs["j1"].rc = 1
+    check("job rc!=0 → chết thật", _member_really_dead(sup, "ngrok", "j1"))
+
+    # mode: process — không có job, `alive` mới là bằng chứng
+    check("mode process không chạy → chết", _member_really_dead(sup, "dummy_http", None))
+
+
+
 async def main() -> int:
     tmp = Path(tempfile.mkdtemp(prefix="panel-selftest-"))
     print(f"tmp: {tmp}")
@@ -342,6 +511,9 @@ async def main() -> int:
         test_supervisor(cfg)
         await test_logs(tmp)
         await test_metrics(tmp, cfg)
+        test_series_archive(tmp)
+        await test_health_dedup(tmp)
+        test_member_death_signal(tmp)
         test_parity()
     finally:
         shutil.rmtree(tmp, ignore_errors=True)

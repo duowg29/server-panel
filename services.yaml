@@ -32,7 +32,7 @@ services:
     kind: composite
     emphasis: primary
     note: Speech + OTG + gateway + ngrok. Một nút chạy hết.
-    members: [speech, cpu_inf, intent, gateway, ngrok]
+    members: [speech, cpu_inf, gpu_chat, intent, gateway, ngrok]
     conflicts_with: [vllm_embed, vllm_chat, asr]
     start:
       # panel tự khởi động lần lượt từng member, chờ health từng cái.
@@ -56,7 +56,7 @@ services:
     group: composite
     kind: composite
     note: 4 service host, không mở tunnel.
-    members: [speech, cpu_inf, intent, gateway]
+    members: [speech, cpu_inf, gpu_chat, intent, gateway]
     conflicts_with: [vllm_embed, vllm_chat, asr]
     start:
       mode: members
@@ -189,16 +189,35 @@ services:
     port: 8002
     log: "{log_dir}/gpu_chat.log"
     pid_file: "{log_dir}/gpu_chat.pid"
-    warn_on_start: Chiếm VRAM của Speech — hybrid mặc định dùng CPU chat :8001
+    warn_on_start: >-
+      Nạp Qwen3-8B 4-bit (~5.5 GB VRAM) cạnh TinySpeech (~7 GB) trên card 16 GB.
+      Còn dư ~3 GB. Chạy được, nhưng đừng bật thêm thứ gì nặng lên GPU nữa.
+    note: Qwen3-8B 4-bit trên GPU — thay cho Qwen3-1.7B Q4 chạy CPU ở :8001
+    # 6 GB checkpoint đọc từ đĩa rồi đẩy lên GPU. Lần đầu (page cache còn nguội)
+    # lâu hơn hẳn các lần sau; 180s mặc định là quá sát.
+    startup_timeout_s: 600
     start:
       mode: process
       cwd: "{root}"
-      argv: [".venv-cpu-inf/bin/python", "-m", "cpu_inference.gpu_chat_server"]
+      # .venv-gpu-chat chứ KHÔNG phải .venv-cpu-inf: venv kia có torch bản CPU
+      # (2.13.0+cpu) nên gpu_chat_server raise "CUDA required" ngay lúc nạp.
+      # .venv-gpu-chat tạo bằng --system-site-packages: dùng lại torch cu130 ở
+      # user-site (khỏi tải lại 1.1 GB), nhưng transformers/tokenizers thì nằm
+      # riêng trong venv — không hạ cấp gói mà faster-whisper của Speech đang dùng.
+      argv: [".venv-gpu-chat/bin/python", "-m", "cpu_inference.gpu_chat_server"]
       env:
         CUDA_VISIBLE_DEVICES: "0"
         GPU_CHAT_PORT: "8002"
-        GPU_CHAT_MEM_FRACTION: "0.22"
-      requires_file: "{root}/.venv-cpu-inf/bin/python"
+        # Model ĐÃ lượng tử sẵn 4-bit trong checkpoint → quant=none.
+        # Đặt "4bit" là chồng thêm một lớp BitsAndBytesConfig lên thứ đã lượng tử.
+        GPU_CHAT_QUANT: "none"
+        GPU_CHAT_MODEL_PATH: "{root}/models/qwen3-8b-bnb-4bit"
+        GPU_CHAT_MODEL_ID: "unsloth/Qwen3-8B-bnb-4bit"
+        # 0.22 (~3.6 GB) là con số đặt cho Qwen3-1.7B hồi Speech còn ăn 11-12 GB.
+        # Giờ Speech chỉ giữ 7 GB (float16 + bỏ XLSR), mà model mới cần ~5.5 GB.
+        GPU_CHAT_MEM_FRACTION: "0.45"
+        GPU_CHAT_MAX_TOKENS: "64"
+      requires_file: "{root}/.venv-gpu-chat/bin/python"
     stop:
       mode: pkill
       pattern: cpu_inference.gpu_chat_server
@@ -231,6 +250,45 @@ services:
         - 0.0.0.0
         - --port
         - "8088"
+      env:
+        # Chat chạy trên GPU ở :8002 (Qwen3-8B 4-bit) thay vì CPU :8001
+        # (Qwen3-1.7B Q4). Embed VẪN ở :8001 — cpu_inf phục vụ cả hai, ở đây
+        # chỉ chuyển riêng phần chat.
+        #
+        # Đặt ở ĐÂY chứ không sửa .env của server, có chủ đích: biến môi trường
+        # thắng file .env (đã kiểm), nên đường chạy tay
+        # `bash deploy/scripts/start_hybrid.sh` giữ nguyên hành vi cũ. Script đó
+        # cố tình giết gpu_chat :8002 rồi ép intent về :8001; sửa .env sang 8002
+        # sẽ làm chính nó tự mâu thuẫn và /intent trả 503 ở bước classify.
+        VLLM_CHAT_URL: "http://127.0.0.1:8002/v1"
+        VLLM_CHAT_MODEL: "unsloth/Qwen3-8B-bnb-4bit"
+        # Cổng chặn TRƯỚC khi gọi LLM (app/pipeline/intent_pipeline.py): candidate
+        # có điểm retrieval dưới ngưỡng này thì pipeline trả "unknown" mà KHÔNG
+        # hỏi model. Mặc định 0.65 được đặt khi chat là Qwen3-1.7B trên CPU, nơi
+        # mỗi lượt tốn 2-4s nên bỏ qua LLM là đáng. Với 8B trên GPU (1.55s) thì
+        # ngưỡng đó đang chặn oan.
+        #
+        # Đo trên bộ 85 ca của scripts/eval_ranking_otg.py, chỉ đổi mỗi biến này:
+        #   0.65 -> 80.0% (7 ca retrieval-OK-classify-fail)
+        #   0.55 -> 88.2% (0 ca)      ← không tăng nhận nhầm
+        #   0.45 -> 88.2% (0 ca)      hạ thêm không được gì
+        # Đặt ở panel chứ không sửa .env: 0.55 chỉ an toàn KHI phía sau là model
+        # đủ mạnh để tự từ chối. Đường chạy tay bằng start_hybrid.sh vẫn dùng
+        # chat 1.7B trên CPU, nên phải giữ 0.65 thận trọng cho nó.
+        CLASSIFY_MIN_CANDIDATE_SCORE: "0.55"
+        # Số ứng viên retrieval đưa cho LLM. .env đặt 3 từ commit d1378d5
+        # ("...for CPU-based chat"), cũng là nhượng bộ cho model CPU yếu: ít ứng
+        # viên thì prompt ngắn, 1.7B đỡ rối. Nhưng nó hạ luôn TRẦN — đáp án đúng
+        # không nằm trong 3 ứng viên thì không model nào cứu được.
+        #
+        # Đo trên 85 ca (8B, min_cand 0.55), chỉ đổi mỗi biến này:
+        #   k=3 -> 88.2%  trần 90.4%
+        #   k=5 -> 92.9%  trần 97.6%   ← chọn cái này
+        #   k=8 -> 94.1%  trần 98.8%   hơn đúng 1 ca = trong khoảng nhiễu
+        # Độ trễ gần như không đổi: 1713 / 1781 / 1817 ms.
+        # Lấy k=5 vì 1 ca không đủ để đánh đổi thêm ứng viên lạ lọt vào prompt —
+        # bộ eval chỉ có 2 ca âm tính nên KHÔNG đo được rủi ro nhận nhầm.
+        RETRIEVAL_TOP_K: "5"
       requires_file: "{root}/.venv-tinytalk/bin/python"
     stop:
       mode: pkill
@@ -239,6 +297,10 @@ services:
       grace_s: 5
     health:
       url: http://127.0.0.1:8088/health
+      # /health của Intent API ping Postgres trên Supabase cloud MỖI LẦN bị hỏi
+      # (SELECT 1 đi ra internet, ~1.6s). Badge chỉ cần status + cache.ready,
+      # không cần db — nên đừng hỏi 3s/lần. 30s là quá đủ để thấy nó chết.
+      interval_s: 30
       rules:
         online: json.status == 'ok' and json.cache.ready
         degraded: json.status == 'ok' or json.status == 'degraded'
@@ -460,6 +522,10 @@ services:
       grace_s: 5
     health:
       url: http://127.0.0.1:8088/health
+      # /health của Intent API ping Postgres trên Supabase cloud MỖI LẦN bị hỏi
+      # (SELECT 1 đi ra internet, ~1.6s). Badge chỉ cần status + cache.ready,
+      # không cần db — nên đừng hỏi 3s/lần. 30s là quá đủ để thấy nó chết.
+      interval_s: 30
       rules:
         online: json.status == 'ok' and json.cache.ready
         degraded: json.status == 'ok' or json.status == 'degraded'

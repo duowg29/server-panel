@@ -1,10 +1,12 @@
-/* Tab Biểu đồ.
+/* Khu Biểu đồ.
 
-   Chỉ fetch và vẽ khi tab ĐANG MỞ và cửa sổ trình duyệt đang hiện — ba lớp
-   bảo vệ CPU: tab đóng, trình duyệt ẩn, nút Tạm dừng.
+   Chỉ fetch và vẽ khi thật sự có người nhìn — ba lớp bảo vệ CPU, độc lập nhau:
+   cuộn khuất (IntersectionObserver), ẩn cửa sổ (visibilitychange), nút Tạm dừng.
+   Nhịp poll còn co giãn theo cửa sổ đang xem, xem pollMsFor().
 
-   Ngược lại, sampler ở backend LUÔN chạy. Nếu tắt cả sampler theo tab thì mở
-   tab ra sẽ thấy 10 phút trống, hỏng hẳn mục đích "xem lại lúc nãy vì sao chậm".
+   Ngược lại, sampler ở backend LUÔN chạy. Nếu tắt cả sampler theo tầm nhìn thì
+   cuộn xuống sẽ thấy một khoảng trống đúng bằng lúc mình không nhìn — hỏng hẳn
+   mục đích "xem lại lúc nãy vì sao chậm".
 */
 
 /** Các số PHẲNG (luồng, fd, uptime, I/O) không đáng một biểu đồ riêng —
@@ -15,9 +17,25 @@ function fmtDurMin(sec) {
   return m < 60 ? m + 'p' : Math.floor(m / 60) + 'g' + (m % 60) + 'p';
 }
 
+/** Nhịp poll theo cửa sổ đang xem.
+
+    Dữ liệu trên đĩa chỉ đổi mỗi 30 giây (ô archive), nên hỏi lại 2 giây một lần
+    ở mốc 24 giờ chỉ tổ bắt server quét lại cả bảng để trả về đúng thứ vừa trả. */
+function pollMsFor(window_s) {
+  if (window_s <= 600) return 2000;
+  if (window_s <= 3600) return 15000;
+  return 30000;
+}
+
+//: meta chỉ chứa load_runs + pid_of là cần tươi; phần còn lại gần như tĩnh
+const META_EVERY_MS = 10000;
+
 const ChartsTab = {
   timer: null,
+  //: khu biểu đồ có đang trong tầm nhìn không (IntersectionObserver đặt)
+  inView: true,
   meta: null,
+  metaAt: 0,
   built: false,
   paused: false,
   window_s: 300,
@@ -26,17 +44,34 @@ const ChartsTab = {
   async start() {
     if (this.timer) return;
     if (!this.meta) {
-      try { this.meta = await (await fetch('/api/series/meta')).json(); }
+      try { this.meta = await (await fetch('/api/series/meta')).json(); this.metaAt = Date.now(); }
       catch { return; }
     }
     if (!this.built) { this.build(); this.built = true; }
     this.tick();
-    this.timer = setInterval(() => this.tick(), 2000);
+    this.reschedule();
+    // quay lại tab trong lúc còn đang bắn tải → nối lại việc theo dõi
+    if (LoadTest.last && LoadTest.last.running && !LoadTest.poll) LoadTest.watch();
+  },
+
+  /** Chạy hay dừng, theo hai điều kiện độc lập: khu biểu đồ có đang trong tầm
+      nhìn không, và cửa sổ trình duyệt có đang hiện không. */
+  sync() {
+    if (this.inView && !document.hidden) this.start();
+    else this.stop();
+  },
+
+  /** Dựng lại timer theo cửa sổ hiện tại. Gọi sau mỗi lần đổi mốc. */
+  reschedule() {
+    if (this.timer) clearInterval(this.timer);
+    this.timer = setInterval(() => this.tick(), pollMsFor(this.window_s));
   },
 
   stop() {
     if (this.timer) { clearInterval(this.timer); this.timer = null; }
     if (this.abort) { this.abort.abort(); this.abort = null; }
+    // Bắn thử cũng poll 1s/lần và KHÔNG dừng theo tab — đây là chỗ nó rò.
+    if (LoadTest.poll) { clearInterval(LoadTest.poll); LoadTest.poll = null; }
   },
 
   // ── dựng khung DOM một lần ─────────────────────────────────────────
@@ -79,6 +114,9 @@ const ChartsTab = {
     // bảng tiến trình / ô KPI.
     root.innerHTML = `
       <section class="sec"><h2>Sức khoẻ &amp; độ trễ</h2>
+        <div class="chart wide" id="ch-svc_state"><h3>Trạng thái theo thời gian<span
+          class="note">dải trống = panel chưa chạy lúc đó · vạch đứt = sự cố</span></h3>
+          <div class="chart__body"></div></div>
         <div class="chartgrid">
           ${chart('lat_dep', 'Phụ thuộc của Intent API',
                   'đường đứt = không kết nối được, không phải 0ms')}
@@ -149,7 +187,9 @@ const ChartsTab = {
         root.querySelectorAll('button.cw').forEach(x => x.classList.remove('on'));
         b.classList.add('on');
         this.window_s = +b.dataset.w;
+        this.metaAt = 0;      // đổi mốc → lấy meta mới ngay, đừng đợi hết 10s
         this.tick();
+        this.reschedule();    // mốc rộng hơn thì poll thưa hơn
       };
     });
     const pause = root.querySelector('#ch-pause');
@@ -179,8 +219,16 @@ const ChartsTab = {
     } catch { return; }
     this.abort = null;
 
-    // làm mới meta để lấy load_runs và pid mới
-    try { this.meta = await (await fetch('/api/series/meta')).json(); } catch {}
+    // Meta chỉ cần tươi ở load_runs và pid_of, mà nó lại là endpoint đắt nhất
+    // (quét cả bảng archive). Trước đây gọi mỗi nhịp; giờ 10s/lần, hoặc ngay
+    // khi đổi mốc cửa sổ, hoặc khi đang bắn tải.
+    const busy = LoadTest.last && LoadTest.last.running;
+    if (busy || Date.now() - this.metaAt >= META_EVERY_MS) {
+      try {
+        this.meta = await (await fetch('/api/series/meta')).json();
+        this.metaAt = Date.now();
+      } catch {}
+    }
 
     this.render(d, reqs);
   },
@@ -189,7 +237,11 @@ const ChartsTab = {
     const S = d.series || {};
     const g = n => S[n] || null;
     const last = n => { const a = S[n]; if (!a) return null; for (let i = a.length - 1; i >= 0; i--) if (a[i] != null) return a[i]; return null; };
-    const base = { t0: d.t0, bucket_s: d.bucket_s, runs: (this.meta && this.meta.load_runs) || [] };
+    const base = {
+      t0: d.t0, bucket_s: d.bucket_s,
+      runs: (this.meta && this.meta.load_runs) || [],
+      incidents: (this.meta && this.meta.incidents) || [],
+    };
     const body = id => document.querySelector(`#ch-${id} .chart__body`);
     const svcs = this.svcs || [];
     const alive = svcs.filter(s => (S[`proc.${s}.rss_mb`] || []).some(v => v != null));
@@ -211,6 +263,17 @@ const ChartsTab = {
     this.kpi('disk', diskFree == null ? '—' : `${diskFree.toFixed(1)} GB`,
       g('host.disk_root_free_gb') || g('host.disk_logs_free_gb'),
       diskFree != null && diskFree < 10 ? 'var(--red)' : 'var(--green)');
+
+    // ── Trạng thái theo thời gian ──
+    // Lấy TẤT CẢ service có series state, kể cả cái đang OFFLINE: một service
+    // tắt suốt cửa sổ vẫn phải có dải của nó, nếu không thì "biến mất" lại
+    // trông như bình thường.
+    stateTimeline(body('svc_state'), {
+      ...base,
+      series: svcs
+        .filter(s => S[`state.${s}`])
+        .map(s => ({ label: s, data: g(`state.${s}`) })),
+    });
 
     // ── GPU ──
     lineMulti(body('gpu_time'), {
@@ -304,6 +367,10 @@ const ChartsTab = {
       st.textContent = `${this.meta.stats.series} series · ${this.meta.stats.points} điểm`
         + (d.source === 'archive' ? ` · từ đĩa (ô ${Math.round(d.bucket_s)}s)` : ' · thời gian thực')
         + (arc.ok ? ` · lưu ${arc.retention_h}h, ${arc.db_mb} MB` : '')
+        // chạm trần thì phải nói ra: im lặng bỏ series mới = mất dữ liệu mà
+        // biểu đồ vẫn trông như bình thường
+        + (this.meta.stats.dropped
+          ? ` · ⚠ BỎ ${this.meta.stats.dropped} series (trần ${this.meta.stats.max_series})` : '')
         + (this.meta.gpu_error ? ` · GPU: ${this.meta.gpu_error}` : '');
     }
   },
@@ -320,7 +387,7 @@ const ChartsTab = {
       const rss = last(`proc.${s}.rss_mb`);
       if (rss == null) return null;
       const pid = (this.meta.pid_of || {})[s];
-      return `<tr><td>${s}</td><td>${pid || '—'}</td>
+      return `<tr><td>${esc(s)}</td><td>${pid || '—'}</td>
         <td>${fmtNum(last(`proc.${s}.cpu_pct`), '%')}</td>
         <td>${fmtNum(rss, 'MB')}</td>
         <td>${fmtNum(last(`gpuproc.${s}.vram_mb`), 'MB')}</td>
@@ -433,11 +500,28 @@ const LoadTest = {
   },
 };
 
+/* Biểu đồ nằm thẳng trong trang chính, dưới các card — nên phần lớn thời gian
+   nó ở NGOÀI màn hình trong khi vẫn fetch và vẽ đều đặn. visibilitychange chỉ
+   bắt được trường hợp ẩn cả cửa sổ, không bắt được "đã cuộn qua". */
+function watchCharts() {
+  const root = document.getElementById('charts-body');
+  if (!root || typeof IntersectionObserver === 'undefined') {
+    ChartsTab.inView = true;
+    ChartsTab.sync();
+    return;
+  }
+  new IntersectionObserver(entries => {
+    ChartsTab.inView = entries.some(e => e.isIntersecting);
+    ChartsTab.sync();
+    // rootMargin: bắt đầu vẽ trước khi tới nơi, để cuộn tới đã có sẵn dữ liệu
+  }, { rootMargin: '200px' }).observe(root);
+}
+
 // ── Tự khởi động ────────────────────────────────────────────────────
 // Đặt Ở ĐÂY chứ không ở app.js: app.js nạp trước file này nên lúc đó
 // ChartsTab chưa tồn tại, guard `typeof` sẽ nuốt mất lệnh start.
 if (document.readyState === 'loading') {
-  document.addEventListener('DOMContentLoaded', () => ChartsTab.start());
+  document.addEventListener('DOMContentLoaded', watchCharts);
 } else {
-  ChartsTab.start();
+  watchCharts();
 }

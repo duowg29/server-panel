@@ -91,7 +91,7 @@ async def lifespan(app: FastAPI):
         incidents.alert(source=source, name=name, text=text)
 
     poller = HealthPoller(cfg, sup, store, on_transition=_on_transition)
-    metrics = MetricsCollector(cfg)
+    metrics = MetricsCollector(cfg, store)
     sampler = Sampler(cfg, sup, store, metrics, on_alert=_on_alert)
     loadgen = LoadGen(cfg, store, poller)
 
@@ -111,7 +111,7 @@ async def lifespan(app: FastAPI):
 
     tasks = [
         asyncio.create_task(poller.run(), name="health"),
-        asyncio.create_task(metrics.run_gpu(), name="gpu"),
+        # KHÔNG có task "gpu" ở đây: Sampler là nơi duy nhất gọi nvidia-smi.
         asyncio.create_task(metrics.run_logs(), name="logscan"),
         asyncio.create_task(_broadcast_loop(app), name="broadcast"),
         asyncio.create_task(_job_watch_loop(app), name="jobwatch"),
@@ -161,10 +161,14 @@ async def _broadcast_loop(app: FastAPI) -> None:
         if not subs:
             continue
         payload = json.dumps(_status_payload(app), ensure_ascii=False)
-        for ws in list(subs):
-            try:
-                await ws.send_text(payload)
-            except Exception:
+        # gửi song song: một client chậm (tab bị throttle, cửa sổ popout treo)
+        # không được giữ chân các client còn lại
+        targets = list(subs)
+        results = await asyncio.gather(
+            *(ws.send_text(payload) for ws in targets), return_exceptions=True
+        )
+        for ws, res in zip(targets, results):
+            if isinstance(res, BaseException):
                 subs.discard(ws)
 
 
@@ -279,9 +283,31 @@ async def _job_watch_loop(app: FastAPI) -> None:
 
 
 # ── Payload ─────────────────────────────────────────────────────────────
+def _gpu_strip(app: FastAPI) -> dict[str, Any]:
+    """Chỉ đủ cho thanh trạng thái trên cùng: tên card, VRAM, mức tải.
+
+    Trước đây chỗ này gọi metrics.series(300s) — duyệt cả deque 50k event mỗi 2
+    giây — trong khi frontend chỉ lấy ra đúng ba con số dưới đây.
+    """
+    store: SeriesStore = app.state.store
+    sampler: Sampler = app.state.sampler
+    used = store.last("gpu.0.mem_used_mb")
+    total = store.meta.get("gpu_total_mb")
+    util = store.last("gpu.0.util")
+    gpus: list[dict[str, Any]] = []
+    if used is not None and total:
+        gpus.append({
+            "index": 0,
+            "name": store.meta.get("gpu_name", "GPU"),
+            "used_mb": round(used),
+            "total_mb": round(total),
+            "util_pct": round(util) if util is not None else 0,
+        })
+    return {"gpu": gpus, "gpu_error": sampler.gpu_error}
+
+
 def _status_payload(app: FastAPI) -> dict[str, Any]:
     poller: HealthPoller = app.state.poller
-    metrics: MetricsCollector = app.state.metrics
     sup: Supervisor = app.state.sup
     services = poller.as_dict()
     # UI dùng chung kết luận này thay vì tự suy từ state (state không phân biệt
@@ -296,7 +322,7 @@ def _status_payload(app: FastAPI) -> dict[str, Any]:
         "ts": time.time(),
         "services": services,
         "public_url": poller.public_url(),
-        "metrics": metrics.series(window_s=300.0),
+        "metrics": _gpu_strip(app),
         # Bản rút gọn, không kèm tail log — payload này đẩy 2s/lần.
         "incidents": app.state.incidents.recent(),
         "jobs": [
@@ -422,13 +448,24 @@ async def api_series_meta(request: Request):
     poller: HealthPoller = app_.state.poller
     cfg: Config = app_.state.cfg
     hidden = {g.id for g in cfg.groups if g.hidden}
+    # sqlite là blocking; gọi thẳng ở đây thì một lần quét bảng làm đứng cả
+    # /ws/status lẫn /ws/logs. archive.stats() tự cache 60s, thread chỉ để
+    # lần tính thật không nằm trên event loop.
+    archive_stats = await asyncio.to_thread(app_.state.archive.stats)
     return {
         **{k: v for k, v in store.meta.items()},
         "gpu_error": sampler.gpu_error,
         "series": store.names(),
         "stats": store.stats(),
         "top_paths": sampler.top_paths(window_s=300.0, n=10),
-        "archive": app_.state.archive.stats(),
+        "archive": archive_stats,
+        # mốc sự cố để vẽ vạch dọc lên MỌI chart — nhìn một đường bất kỳ là
+        # thấy ngay chỗ gãy nằm đâu so với số liệu
+        "incidents": [
+            {"t": i["ts"], "svc_id": i.get("svc_id"), "kind": i.get("kind"),
+             "name": i.get("name")}
+            for i in app_.state.incidents.recent(60)
+        ],
         "services": [
             {"id": s.id, "name": s.name, "state": poller.state_of(s.id),
              "pid": (poller.snapshot.get(s.id).pid if poller.snapshot.get(s.id) else None)}
@@ -458,14 +495,19 @@ async def api_series(
     # nguồn — độ mịn khác nhau (2s so với 30s) sẽ thấy ngay trên chart.
     if window_s > store.retention_s:
         # Tên trên đĩa có thể gồm cả series đã chết, nên lọc từ archive chứ
-        # không lọc theo store.names().
-        wanted = None
-        if prefixes:
-            wanted = [n for n in archive.resample(window_s=window_s, buckets=2)["series"]
-                      if n.startswith(prefixes)]
-        out = archive.resample(wanted, window_s=window_s, buckets=buckets)
-        out["source"] = "archive"
-        return out
+        # không lọc theo store.names(). archive.names() là một SELECT DISTINCT,
+        # rẻ hơn hẳn việc resample lần hai chỉ để lấy khoá.
+        def _from_disk() -> dict[str, Any]:
+            wanted = None
+            if prefixes:
+                wanted = [n for n in archive.names(time.time() - window_s)
+                          if n.startswith(prefixes)]
+            return archive.resample(wanted, window_s=window_s, buckets=buckets)
+
+        # copy nông: dict trả về có thể là bản đang nằm trong cache của archive,
+        # đừng gắn thêm khoá vào chính nó
+        out = await asyncio.to_thread(_from_disk)
+        return {**out, "source": "archive"}
 
     wanted = [n for n in store.names() if n.startswith(prefixes)] if prefixes else None
     out = store.resample(wanted, window_s=window_s, buckets=buckets)
@@ -588,6 +630,28 @@ def _composite_progress(app_: FastAPI, svc) -> dict[str, Any]:
     }
 
 
+#: `pgrep` là subprocess: fork cả panel ra để hỏi một câu. Vòng broadcast hỏi
+#: 2s/lần cho mọi service xung đột đang ONLINE mà không có PID (đúng cảnh hybrid
+#: chạy → health của vllm_* cũng 200). Nhớ câu trả lời vài giây là đủ.
+_PGREP_TTL_S = 5.0
+_pgrep_cache: dict[str, tuple[float, bool]] = {}
+
+
+def _pgrep_alive(pattern: str) -> bool:
+    hit = _pgrep_cache.get(pattern)
+    now = time.time()
+    if hit is not None and now - hit[0] < _PGREP_TTL_S:
+        return hit[1]
+    alive = bool(_pgrep(pattern))
+    _pgrep_cache[pattern] = (now, alive)
+    return alive
+
+
+def _pgrep_forget() -> None:
+    """Sau Start/Stop/Restart thì câu trả lời cũ hết giá trị ngay."""
+    _pgrep_cache.clear()
+
+
 def _really_running(app_: FastAPI, svc_id: str) -> bool:
     """Service này CÓ THẬT đang chạy không.
 
@@ -603,7 +667,7 @@ def _really_running(app_: FastAPI, svc_id: str) -> bool:
         return True
     svc = app_.state.cfg.services.get(svc_id)
     if svc and svc.stop and svc.stop.mode == "pkill" and svc.stop.pattern:
-        return bool(_pgrep(svc.stop.pattern))
+        return _pgrep_alive(svc.stop.pattern)
     # không có cách xác minh process → tin health
     return True
 
@@ -638,6 +702,22 @@ def _progress_hint(member) -> str:
         except OSError:
             pass
     return " · ".join(bits)
+
+
+def _member_really_dead(sup: Supervisor, mid: str, job_id: str | None) -> bool:
+    """Có bằng chứng member này đã chết chưa?
+
+    * `mode: process` — panel giữ PID, nên `alive` là bằng chứng thật.
+    * `mode: script`  — panel chỉ có job. Job còn chạy hoặc đã xong rc=0 thì
+      script đã làm xong việc của nó; service lên chậm là chuyện của health,
+      cứ chờ hết timeout. Chỉ rc != 0 mới là chết thật.
+    """
+    if job_id:
+        job = sup.jobs.get(job_id)
+        if job is None:
+            return False
+        return not job.running and bool(job.rc)
+    return not sup.state(mid).alive
 
 
 async def _run_member_sequence(app_: FastAPI, svc, job) -> None:
@@ -676,10 +756,15 @@ async def _run_member_sequence(app_: FastAPI, svc, job) -> None:
                 rc = 1
                 break
             poller.wake(mid)
+            # mode script không để lại PID cho panel giữ — nó là một job.
+            # Giữ job_id để còn phân biệt "chưa lên" với "đã chết" bên dưới.
+            member_job = res.get("job_id")
             if res.get("already_running"):
                 _seq_log(log_path, f"[{mid}] đã chạy sẵn pid={res.get('pid')}, chờ health ...")
             elif res.get("pid"):
                 _seq_log(log_path, f"[{mid}] pid={res['pid']}, chờ health ...")
+            elif member_job:
+                _seq_log(log_path, f"[{mid}] job {member_job}, chờ health ...")
             if member.log:
                 _seq_log(log_path, f"[{mid}] chi tiết ở: {member.log}")
 
@@ -709,8 +794,16 @@ async def _run_member_sequence(app_: FastAPI, svc, job) -> None:
                         f"[{mid}]   ... {st.state} — đã chờ {waited}s"
                         f"{' · ' + extra if extra else ''}",
                     )
-                # process chết hẳn thì đừng chờ hết timeout
-                if st.state == "OFFLINE" and not sup.state(mid).alive:
+                # Chết hẳn thì đừng chờ hết timeout — nhưng "chết" phải CHỨNG
+                # MINH được, không suy từ việc thiếu PID.
+                #
+                # Service `mode: script` (ngrok) chạy như một job, panel không
+                # giữ PID của nó, nên `alive` LUÔN False. Điều kiện cũ chỉ cần
+                # health trả OFFLINE một lần là kết luận "đã chết" — mà lần
+                # probe đầu diễn ra 2s sau khi chạy, lúc ngrok chưa kịp đăng ký
+                # tunnel nào (rule: len(json.tunnels) > 0). Kết quả: composite
+                # gãy ở ngrok trong khi ngrok vẫn sống khoẻ.
+                if st.state == "OFFLINE" and _member_really_dead(sup, mid, member_job):
                     _seq_log(
                         log_path,
                         f"[{mid}] process đã chết — xem {member.log or 'log'}",
@@ -786,6 +879,7 @@ async def api_start(request: Request, svc_id: str):
     except SupervisorError as e:
         raise HTTPException(400, str(e)) from None
     poller.wake(svc_id)
+    _pgrep_forget()
     return res
 
 
@@ -797,6 +891,7 @@ async def api_stop(request: Request, svc_id: str):
     except SupervisorError as e:
         raise HTTPException(400, str(e)) from None
     request.app.state.poller.wake(svc_id)
+    _pgrep_forget()
     return res
 
 
@@ -808,6 +903,7 @@ async def api_restart(request: Request, svc_id: str):
     except SupervisorError as e:
         raise HTTPException(400, str(e)) from None
     request.app.state.poller.wake(svc_id)
+    _pgrep_forget()
     return res
 
 
