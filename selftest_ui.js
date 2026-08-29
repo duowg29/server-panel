@@ -31,6 +31,7 @@ class El {
     this.tagName = tag; this.children = []; this.className = ''; this._text = '';
     this.style = {}; this.dataset = {}; this.hidden = false; this.title = '';
     this.disabled = false; this.classList = new ClassList(this); this.parentNode = null;
+    this.value = '';
   }
   appendChild(c) { c.parentNode = this; this.children.push(c); return c; }
   append(...cs) { cs.forEach(c => this.appendChild(c)); }
@@ -46,7 +47,17 @@ class El {
   get innerHTML() { return this._html || ''; }
   removeAttribute(k) { delete this[k]; }
   querySelector() { return null; }
-  querySelectorAll() { return []; }
+  querySelectorAll(sel) {
+    // đủ cho applyFilter(): '#groups .sec' và '.card'
+    const out = [];
+    const want = sel.trim().split(/\s+/).pop().replace('.', '');
+    const walk = n => n.children.forEach(c => {
+      if ((c.className || '').split(/\s+/).includes(want)) out.push(c);
+      walk(c);
+    });
+    walk(this);
+    return out;
+  }
   addEventListener() {}
   /** ảnh chụp có thể so sánh: đủ mọi thứ hiển thị ra được */
   snap() {
@@ -63,6 +74,7 @@ class El {
 const byId = {};
 const doc = {
   createElement: t => new El(t),
+  querySelectorAll: sel => (byId['#groups'] ? byId['#groups'].querySelectorAll(sel) : []),
   querySelector: sel => byId[sel] || (byId[sel] = new El('div')),
   getElementById: id => byId['#' + id] || (byId['#' + id] = new El('div')),
   addEventListener() {},
@@ -93,7 +105,7 @@ vm.runInContext(read('charts.js') +
   sandbox);
 // `const State` không thành thuộc tính của global trong vm — xuất ra tường minh
 vm.runInContext(read('app.js') +
-  '\n;globalThis.__x = { State, $, renderGroups, syncAll };', sandbox);
+  '\n;globalThis.__x = { State, $, renderGroups, syncAll, applyFilter };', sandbox);
 const X = sandbox.__x;
 const C = sandbox.__c;
 
@@ -258,6 +270,38 @@ const T0 = 1750000000;   // mốc cố định: test không được phụ thu�
   const paths = (el2.innerHTML.match(/<path d="M/g) || []).length;
   // 2 đoạn dữ liệu × (nền + viền) = 4 path, thay vì 2 path liền một mạch qua khoảng trống
   check('vùng chồng đứt ở chỗ không có mẫu', paths === 4, `${paths} path`);
+}
+
+// ── Lọc service ──────────────────────────────────────────────────────
+{
+  S.status = SCENARIOS[1].status;
+  X.renderGroups();
+  const filt = X.$('#svc-filter');
+  const cards = () => X.$('#groups').querySelectorAll('.card');
+  const visible = () => cards().filter(c => !c.hidden).length;
+
+  check('chưa lọc thì hiện hết', visible() === 2, `${visible()}/2`);
+
+  filt.value = 'speech'; X.applyFilter();
+  check('lọc theo tên hiện đúng 1', visible() === 1, `${visible()} card`);
+
+  filt.value = 'ONLINE'; X.applyFilter();
+  check('lọc theo trạng thái được', visible() >= 1, `${visible()} card`);
+
+  filt.value = 'khongcogi'; X.applyFilter();
+  check('không khớp gì thì ẩn hết', visible() === 0, `${visible()} card`);
+
+  filt.value = ''; X.applyFilter();
+  check('xoá ô lọc thì hiện lại hết', visible() === 2, `${visible()}/2`);
+
+  // Lọc KHÔNG được xoá node — nếu xoá thì bảng "Thêm" đang mở sẽ mất
+  const card0 = cards()[0];
+  const more0 = card0.children.find(c => c.className === 'btns more');
+  more0.style.display = 'flex';
+  filt.value = 'speech'; X.applyFilter();
+  filt.value = ''; X.applyFilter();
+  check('lọc xong bảng "Thêm" vẫn mở', more0.style.display === 'flex',
+    `display=${more0.style.display}`);
 }
 
 console.log(fails ? `\n${fails} test HỎNG` : '\ntất cả test DOM pass');

@@ -222,6 +222,29 @@ function syncAll() {
     const card = _cards.get(svc.id);
     if (card) syncCard(card, svc);
   }
+  applyFilter();
+}
+
+/* Lọc card. ẨN bằng `hidden` chứ không xoá node — giữ nguyên nguyên tắc của
+   syncCard: không đụng vào cấu trúc DOM thì bảng "⋯ Thêm" đang mở vẫn mở, và
+   gõ vào ô lọc không làm mất thao tác đang dở. */
+function applyFilter() {
+  const inp = $('#svc-filter');
+  // popout.html không có ô lọc — đừng giả định phần tử tồn tại, cũng đừng giả
+  // định nó có .value
+  const q = ((inp && inp.value) || '').trim().toLowerCase();
+  if (!State.cfg) return;
+  for (const svc of State.cfg.services) {
+    const card = _cards.get(svc.id);
+    if (!card) continue;
+    const hay = [svc.id, svc.name, svc.port, stateOf(svc.id)].join(' ').toLowerCase();
+    card.hidden = q !== '' && !hay.includes(q);
+  }
+  // khu vực không còn card nào hiện thì ẩn luôn cả tiêu đề nhóm
+  document.querySelectorAll('#groups .sec').forEach(sec => {
+    const any = [...sec.querySelectorAll('.card')].some(c => !c.hidden);
+    sec.hidden = !any;
+  });
 }
 
 function buildCard(svc) {
@@ -847,6 +870,7 @@ $('#btn-reload').onclick = async () => {
   } catch (e) { toast('reload lỗi: ' + e.message, 'err'); }
 };
 $('#btn-closeall').onclick = () => Logs.closeAll();
+if ($('#svc-filter')) $('#svc-filter').oninput = () => applyFilter();
 $('#btn-notify').onclick = async () => {
   if (!('Notification' in window)) return toast('trình duyệt không hỗ trợ thông báo', 'err');
   const p = await Notification.requestPermission();

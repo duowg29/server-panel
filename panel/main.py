@@ -482,36 +482,51 @@ async def api_series(
     window_s: float = Query(600.0, ge=30, le=259200),
     buckets: int = Query(120, ge=10, le=600),
     names: str | None = Query(None, description="lọc theo tiền tố, cách nhau bởi dấu phẩy"),
+    end_ts: float | None = Query(
+        None, description="mốc KẾT THÚC cửa sổ (epoch giây). Bỏ trống = bây giờ."
+    ),
 ):
-    """Dữ liệu biểu đồ. Tab mở mới poll — không nhồi vào WebSocket của trang chính."""
+    """Dữ liệu biểu đồ. Tab mở mới poll — không nhồi vào WebSocket của trang chính.
+
+    `end_ts` là thứ mở khoá phần archive: không có nó thì mọi cửa sổ đều kết thúc
+    ở hiện tại, nên 72 giờ lưu trên đĩa chỉ xem được 24 giờ gần nhất — đúng câu
+    hỏi "chiều qua lúc 3h có chuyện gì" lại là câu không trả lời được.
+    """
     store: SeriesStore = request.app.state.store
     archive: SeriesArchive = request.app.state.archive
     # báo cho sampler biết tab đang mở → bật nhánh ngrok-requests
     request.app.state.sampler.note_detail_interest()
 
     prefixes = tuple(x.strip() for x in names.split(",") if x.strip()) if names else None
+    now = time.time()
+    end = now if end_ts is None else min(float(end_ts), now)
 
-    # RAM chỉ giữ 10 phút. Xin rộng hơn thì phải lấy từ đĩa, và phải nói rõ
-    # nguồn — độ mịn khác nhau (2s so với 30s) sẽ thấy ngay trên chart.
-    if window_s > store.retention_s:
+    # RAM chỉ giữ 10 phút, và chỉ giữ phần MỚI NHẤT. Cửa sổ nằm trọn trong đó thì
+    # đọc RAM (mịn 2s); lùi ra ngoài dù chỉ một chút cũng phải xuống đĩa (ô 30s).
+    # Phải nói rõ nguồn — hai độ mịn khác nhau sẽ thấy ngay trên chart.
+    from_ram = window_s <= store.retention_s and (end - window_s) >= (now - store.retention_s)
+
+    if not from_ram:
         # Tên trên đĩa có thể gồm cả series đã chết, nên lọc từ archive chứ
         # không lọc theo store.names(). archive.names() là một SELECT DISTINCT,
         # rẻ hơn hẳn việc resample lần hai chỉ để lấy khoá.
         def _from_disk() -> dict[str, Any]:
             wanted = None
             if prefixes:
-                wanted = [n for n in archive.names(time.time() - window_s)
+                wanted = [n for n in archive.names(end - window_s)
                           if n.startswith(prefixes)]
-            return archive.resample(wanted, window_s=window_s, buckets=buckets)
+            return archive.resample(wanted, window_s=window_s, buckets=buckets, now=end)
 
         # copy nông: dict trả về có thể là bản đang nằm trong cache của archive,
         # đừng gắn thêm khoá vào chính nó
         out = await asyncio.to_thread(_from_disk)
-        return {**out, "source": "archive"}
+        return {**out, "source": "archive", "end_ts": end, "live": end_ts is None}
 
     wanted = [n for n in store.names() if n.startswith(prefixes)] if prefixes else None
-    out = store.resample(wanted, window_s=window_s, buckets=buckets)
+    out = store.resample(wanted, window_s=window_s, buckets=buckets, now=end)
     out["source"] = "live"
+    out["end_ts"] = end
+    out["live"] = end_ts is None
     return out
 
 

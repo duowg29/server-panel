@@ -503,6 +503,71 @@ def test_member_death_signal(tmp: Path) -> None:
 
 
 
+def test_series_end_ts(tmp: Path) -> None:
+    """Xem lại được QUÁ KHỨ, không chỉ khoảng kết thúc ở hiện tại.
+
+    Archive giữ 72 giờ, nhưng nếu mọi cửa sổ đều kết thúc ở "bây giờ" thì chỉ
+    xem được 24 giờ gần nhất — 2/3 dữ liệu trên đĩa không chạm tới được, và đúng
+    câu hỏi archive sinh ra để trả lời ("chiều qua lúc 3h") lại không trả lời
+    được.
+
+    Ghi thẳng vào sqlite chứ không qua flush(): flush chỉ ghi các ô VỪA ĐÓNG, và
+    SeriesStore có trần 1200 điểm/series — không đường nào nhét 60 giờ vào RAM.
+    Ở đây cần mô phỏng cái đĩa của một panel đã chạy nhiều ngày.
+    """
+    print("\n== xem lại quá khứ (end_ts) ==")
+    now = time.time()
+    arc = SeriesArchive(tmp / "hist.db", bucket_s=30.0, retention_s=72 * 3600.0)
+    rows = []
+    for k in range(60 * 120):                      # 60 giờ, ô 30s
+        ts = int(now - 60 * 3600 + k * 30)
+        rows.append(("host.cpu_pct", ts, (now - ts) / 3600.0))   # giá trị = số giờ trước
+    arc.db.executemany("INSERT OR REPLACE INTO points VALUES (?,?,?)", rows)
+    arc.db.commit()
+
+    for hours in (2, 24, 50):
+        end = now - hours * 3600
+        out = arc.resample(["host.cpu_pct"], window_s=1800, buckets=30, now=end)
+        vals = [v for v in out["series"].get("host.cpu_pct", []) if v is not None]
+        mid = vals[len(vals) // 2] if vals else -1
+        check(f"đọc được cửa sổ lùi {hours}h", bool(vals) and abs(mid - hours) < 1.5,
+              f"giữa cửa sổ = {mid:.1f}, kỳ vọng ≈ {hours}")
+
+    # hai mốc khác nhau phải cho hai kết quả khác nhau — nếu end_ts bị bỏ qua thì
+    # cả hai sẽ trả về y hệt phần mới nhất
+    a = arc.resample(["host.cpu_pct"], window_s=1800, buckets=30, now=now - 2 * 3600)
+    b = arc.resample(["host.cpu_pct"], window_s=1800, buckets=30, now=now - 40 * 3600)
+    check("mốc khác nhau cho dữ liệu khác nhau",
+          a["t0"] != b["t0"] and a["series"] != b["series"])
+    arc.close()
+
+
+def test_vram_warning(tmp: Path) -> None:
+    """Cảnh báo VRAM: kêu khi sắp hết, im khi còn nhiều, không kêu lặp."""
+    print("\n== cảnh báo VRAM ==")
+    from panel import sampler as sm
+
+    alerts: list[tuple] = []
+    cfg = cfgmod.load(make_config(tmp))
+    sp = Sampler(cfg, Supervisor(cfg), SeriesStore(),
+                 on_alert=lambda source, name, text: alerts.append((source, name, text)))
+
+    total = 16380.0
+    sp._check_vram(0, total - 5000, total)          # còn 4.9 GB
+    check("còn nhiều thì im", not alerts, str(alerts))
+
+    sp._check_vram(0, total - 800, total)           # còn 0.78 GB
+    check("sắp hết thì kêu", len(alerts) == 1, str(alerts[-1][1:] if alerts else None))
+
+    sp._check_vram(0, total - 700, total)           # vẫn thiếu
+    check("không kêu lặp khi vẫn thiếu", len(alerts) == 1, f"{len(alerts)} lần")
+
+    sp._check_vram(0, total - 5000, total)          # đã dọn xong
+    sp._check_vram(0, total - 800, total)           # thiếu lại
+    check("dọn xong rồi thiếu lại thì kêu tiếp", len(alerts) == 2, f"{len(alerts)} lần")
+
+
+
 async def main() -> int:
     tmp = Path(tempfile.mkdtemp(prefix="panel-selftest-"))
     print(f"tmp: {tmp}")
@@ -514,6 +579,8 @@ async def main() -> int:
         test_series_archive(tmp)
         await test_health_dedup(tmp)
         test_member_death_signal(tmp)
+        test_series_end_ts(tmp)
+        test_vram_warning(tmp)
         test_parity()
     finally:
         shutil.rmtree(tmp, ignore_errors=True)

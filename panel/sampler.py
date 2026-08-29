@@ -44,6 +44,12 @@ DISK_WARN_GB = float(os.environ.get("PANEL_DISK_WARN_GB", "10"))
 #: chỉ hết cảnh báo khi đã dọn được kha khá, tránh kêu đi kêu lại quanh ngưỡng
 DISK_CLEAR_GB = DISK_WARN_GB * 1.5
 
+#: dưới ngần này GB VRAM trống thì kêu. Speech giữ ~7 GB, chat GPU ~5.7 GB trên
+#: card 16 GB — còn khoảng 3 GB. Hết VRAM thì Whisper OOM giữa lúc chấm điểm,
+#: mà lỗi đó hiện ra dưới dạng "assess trả 500", rất khó lần ngược về nguyên nhân.
+VRAM_WARN_GB = float(os.environ.get("PANEL_VRAM_WARN_GB", "1.5"))
+VRAM_CLEAR_GB = VRAM_WARN_GB * 1.6
+
 CLK_TCK = os.sysconf("SC_CLK_TCK") or 100
 
 GPU_FIELDS = [
@@ -80,6 +86,8 @@ class Sampler:
         self.on_alert = on_alert
         #: phân vùng nào đang trong trạng thái kêu thiếu chỗ
         self._disk_warned: set[str] = set()
+        #: GPU nào đang trong trạng thái kêu thiếu VRAM
+        self._vram_warned: set[int] = set()
         self.gpu_error: str | None = None
         #: tab biểu đồ còn mở tới lúc nào (mỗi lần /api/series được gọi thì gia hạn)
         self.detail_until = 0.0
@@ -253,6 +261,25 @@ class Sampler:
         elif free_gb > DISK_CLEAR_GB:
             self._disk_warned.discard(name)
 
+    def _check_vram(self, gpu: int, used_mb: float, total_mb: float) -> None:
+        """Cảnh báo VRAM sắp hết — cùng khuôn với _check_disk.
+
+        Có hai model trên một card thì đây không còn là chuyện lý thuyết.
+        """
+        if self.on_alert is None or not total_mb:
+            return
+        free_gb = (total_mb - used_mb) / 1024.0
+        if free_gb < VRAM_WARN_GB and gpu not in self._vram_warned:
+            self._vram_warned.add(gpu)
+            self.on_alert(
+                "host",
+                f"VRAM (GPU {gpu})",
+                f"chỉ còn {free_gb:.1f} GB trống / {total_mb / 1024:.1f} GB — "
+                f"thêm tải lên GPU là OOM",
+            )
+        elif free_gb > VRAM_CLEAR_GB:
+            self._vram_warned.discard(gpu)
+
     # ── từng tiến trình ───────────────────────────────────────────────
     def _sample_procs(self, now: float, with_fd: bool) -> None:
         pid_of: dict[str, int] = {}
@@ -425,8 +452,11 @@ class Sampler:
                 self.store.meta["gpu_total_mb"] = total
             if limit:
                 self.store.meta["gpu_power_limit_w"] = limit
+            used = _num(cols[2])
+            if used is not None and total:
+                self._check_vram(g, used, total)
             self.store.push_many({
-                f"gpu.{g}.mem_used_mb": _num(cols[2]),
+                f"gpu.{g}.mem_used_mb": used,
                 f"gpu.{g}.mem_reserved_mb": _num(cols[4]),
                 f"gpu.{g}.util": _num(cols[5]),
                 f"gpu.{g}.util_mem": _num(cols[6]),

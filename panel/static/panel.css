@@ -710,6 +710,25 @@ button.big    { min-height: 38px; font-size: 13.5px; padding: .4rem 1.1rem; }
   min-width: 0;
 }
 .chart.wide { grid-column: 1 / -1; }
+/* Ô lọc service trên masthead */
+#svc-filter {
+  background: var(--bg-sunken);
+  border: 1px solid var(--line);
+  border-radius: var(--r-sm);
+  color: var(--fg);
+  font-family: var(--font-mono);
+  font-size: 12px;
+  padding: .3rem .6rem;
+  min-width: 12rem;
+}
+#svc-filter:focus { outline: none; border-color: var(--cyan); }
+
+/* Chart được phóng to: chiếm cả bề ngang lưới, cao gấp rưỡi.
+   Chỉ đổi khung — SVG bên trong tự co giãn theo viewBox nên không phải vẽ lại. */
+.chart.zoom { grid-column: 1 / -1; }
+.chart.zoom .chart__body svg { max-height: 60vh; }
+.chart > h3 { user-select: none; }
+
 /* .wide đứng NGOÀI .chartgrid (timeline trạng thái, bảng tiến trình) thì
    grid-column không có tác dụng — cần khoảng cách riêng để không dính vào lưới */
 .sec > .chart.wide { margin: .7rem 0; }

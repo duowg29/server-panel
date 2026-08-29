@@ -34,6 +34,9 @@ const ChartsTab = {
   timer: null,
   //: khu biểu đồ có đang trong tầm nhìn không (IntersectionObserver đặt)
   inView: true,
+  //: mốc kết thúc cửa sổ đang xem. null = bám theo hiện tại.
+  //: Khác null nghĩa là đang xem QUÁ KHỨ — dữ liệu không đổi nữa nên thôi poll.
+  endTs: null,
   meta: null,
   metaAt: 0,
   built: false,
@@ -61,9 +64,27 @@ const ChartsTab = {
     else this.stop();
   },
 
+  /** Nhãn "đang xem lúc nào" + bật/tắt nút Bây giờ. */
+  _renderWhen(d) {
+    const when = document.getElementById('ch-when');
+    const nowBtn = document.getElementById('ch-now');
+    if (nowBtn) nowBtn.classList.toggle('on', this.endTs == null);
+    if (!when) return;
+    if (this.endTs == null) {
+      when.textContent = 'đang bám theo hiện tại';
+      return;
+    }
+    const f = t => new Date(t * 1000).toLocaleString('vi-VN', { hour12: false });
+    const end = (d && d.end_ts) || this.endTs;
+    when.textContent = `${f(end - this.window_s)}  →  ${f(end)}`;
+  },
+
   /** Dựng lại timer theo cửa sổ hiện tại. Gọi sau mỗi lần đổi mốc. */
   reschedule() {
     if (this.timer) clearInterval(this.timer);
+    // Xem quá khứ thì dữ liệu ĐÃ CỐ ĐỊNH — poll lại chỉ tổ bắt server quét đĩa
+    // để trả về đúng thứ vừa trả.
+    if (this.endTs != null) { this.timer = null; return; }
     this.timer = setInterval(() => this.tick(), pollMsFor(this.window_s));
   },
 
@@ -122,7 +143,10 @@ const ChartsTab = {
                   'đường đứt = không kết nối được, không phải 0ms')}
           ${chart('lat_probe', 'Độ trễ probe từng service', '')}
           ${chart('gpu_time', 'GPU theo thời gian', 'mức tải · bộ nhớ · nhiệt · điện')}
-          ${chart('vram_split', 'VRAM đang chia cho ai', 'ngay lúc này')}
+          ${chart('gpu_throttle', 'Xung nhịp vs nhiệt',
+                  'nhịp tụt trong khi tải cao = đang bị bóp vì nóng/điện')}
+          ${chart('vram_split', 'VRAM đang chia cho ai',
+                  'ngay lúc này · torch không thấy được phần CTranslate2')}
         </div>
       </section>
 
@@ -132,6 +156,7 @@ const ChartsTab = {
           ${chart('proc_ram', 'RAM từng service',
                   'RSS cộng lại ≠ RAM máy: thư viện dùng chung bị tính trùng')}
           ${chart('req_rpm', 'Request mỗi phút', 'đã loại probe của panel')}
+          ${chart('err_rate', 'Tỉ lệ lỗi', '% request trả 4xx/5xx · vạch đứt = ngưỡng 5%')}
           ${chart('top_path', 'Endpoint gọi nhiều nhất', '5 phút gần đây')}
         </div>
         <div class="chart wide" id="ch-proctable"><h3>Bảng tiến trình</h3>
@@ -180,6 +205,15 @@ const ChartsTab = {
         <span style="flex:1"></span>
         <button id="ch-pause">⏸  Tạm dừng</button>
         <span id="ch-stat" class="sub"></span>
+      </div>
+      <div class="chartfoot">
+        <span>Thời điểm:</span>
+        <button id="ch-back" title="Lùi nửa cửa sổ">⏴  Lùi</button>
+        <button id="ch-fwd" title="Tiến nửa cửa sổ">Tiến  ⏵</button>
+        <button id="ch-now" class="on" title="Bám theo hiện tại">⏺  Bây giờ</button>
+        <span id="ch-when" class="sub"></span>
+        <span style="flex:1"></span>
+        <span class="sub" id="ch-retain"></span>
       </div>`;
 
     root.querySelectorAll('button.cw').forEach(b => {
@@ -192,12 +226,46 @@ const ChartsTab = {
         this.reschedule();    // mốc rộng hơn thì poll thưa hơn
       };
     });
+    // ── điều hướng thời gian ──
+    // Archive giữ 72 giờ nhưng nếu mọi cửa sổ đều kết thúc ở "bây giờ" thì chỉ
+    // xem được 24 giờ gần nhất. Ba nút này mở khoá phần còn lại.
+    const nav = (deltaFactor) => {
+      const base = this.endTs == null ? Date.now() / 1000 : this.endTs;
+      const next = base + deltaFactor * this.window_s;
+      const now = Date.now() / 1000;
+      this.endTs = next >= now - 1 ? null : next;      // chạm hiện tại thì về chế độ bám
+      this.reschedule();
+      this.tick();
+    };
+    root.querySelector('#ch-back').onclick = () => nav(-0.5);
+    root.querySelector('#ch-fwd').onclick = () => nav(+0.5);
+    root.querySelector('#ch-now').onclick = () => {
+      this.endTs = null;
+      this.reschedule();
+      this.tick();
+    };
+
     const pause = root.querySelector('#ch-pause');
     pause.onclick = () => {
       this.paused = !this.paused;
       pause.classList.toggle('on', this.paused);
       pause.textContent = this.paused ? '▶  Chạy tiếp' : '⏸  Tạm dừng';
     };
+
+    // ── phóng to một chart ──
+    // 15 chart trong lưới; muốn nhìn kỹ một cái thì phải nheo mắt. Bấm tiêu đề
+    // để nó chiếm cả bề ngang. Chỉ thêm/bớt một class, không dựng lại DOM nên
+    // không mất tooltip hay dữ liệu đang vẽ.
+    root.querySelectorAll('.chart > h3').forEach(h => {
+      h.title = 'Bấm để phóng to / thu nhỏ';
+      h.style.cursor = 'zoom-in';
+      h.onclick = () => {
+        const c = h.parentElement;
+        const big = c.classList.toggle('zoom');
+        h.style.cursor = big ? 'zoom-out' : 'zoom-in';
+        if (big) c.scrollIntoView({ block: 'nearest', behavior: 'smooth' });
+      };
+    });
 
     LoadTest.bind(this);
     this.svcs = svcs;
@@ -211,7 +279,8 @@ const ChartsTab = {
     let d, reqs = [];
     try {
       const buckets = this.window_s <= 60 ? 60 : 120;
-      const r = await fetch(`/api/series?window_s=${this.window_s}&buckets=${buckets}`,
+      const at = this.endTs == null ? '' : `&end_ts=${this.endTs.toFixed(0)}`;
+      const r = await fetch(`/api/series?window_s=${this.window_s}&buckets=${buckets}${at}`,
         { signal: this.abort.signal });
       d = await r.json();
       const rr = await fetch('/api/requests/recent?n=300', { signal: this.abort.signal });
@@ -286,19 +355,51 @@ const ChartsTab = {
       ],
     });
 
-    // phân rã VRAM: torch cấp phát vs phần ngoài torch (CUDA context, cuBLAS…)
+    // Throttle: xung nhịp tụt trong khi util vẫn cao nghĩa là card đang bị bóp
+    // vì nhiệt hoặc trần điện — lúc đó "GPU chậm" không phải lỗi của model.
+    // File này từng bỏ biểu đồ xung nhịp vì "đo thật thì phẳng lì" — đúng khi
+    // GPU chỉ chạy Whisper. Giờ Whisper + Qwen3-8B dùng chung card 16 GB nên lý
+    // do đó không còn.
+    lineMulti(body('gpu_throttle'), {
+      ...base, unit: '',
+      series: [
+        { label: 'nhịp SM (MHz)', data: g('gpu.0.clock_sm'), color: 'var(--cyan)' },
+        { label: 'nhịp mem (MHz)', data: g('gpu.0.clock_mem'), color: '#0e7490' },
+        { label: 'nhiệt °C', data: g('gpu.0.temp'), color: 'var(--red)' },
+        { label: 'mức tải %', data: g('gpu.0.util'), color: 'var(--fg-dim)', width: 1 },
+      ],
+    });
+
+    // Phân rã VRAM. Hai chỗ từng dán nhãn sai:
+    //
+    // 1. Khúc `procVram - torchRes` KHÔNG phải "CUDA context + cuBLAS". Speech
+    //    chạy faster-whisper, tức CTranslate2 — KHÔNG phải PyTorch. Nên
+    //    torch.cuda.memory_allocated() không hề thấy trọng số Whisper. Cái
+    //    torch đếm được (~2.4 GB) chủ yếu là hai model căn chữ MMS_FA +
+    //    WAV2VEC2. Đo thật: process 6424 MiB, torch reserved 2489 MiB → gần
+    //    4 GB chênh phần lớn là Whisper large-v3 fp16 của CTranslate2.
+    //
+    // 2. Mỗi service GPU khác nay đứng riêng một khúc. Trước gộp hết vào
+    //    "tiến trình khác", nhưng gpu_chat (Qwen3-8B, ~5.7 GB) là service của
+    //    chính mình — gọi nó là "khác" thì không đọc ra được ai đang ăn VRAM.
     const procVram = last('gpuproc.speech.vram_mb') || 0;
     const torchAlloc = (last('svc.speech.torch_alloc_gb') || 0) * 1024;
     const torchRes = (last('svc.speech.torch_reserved_gb') || 0) * 1024;
-    const others = svcs.filter(s => s !== 'speech')
-      .reduce((a, s) => a + (last(`gpuproc.${s}.vram_mb`) || 0), 0)
-      + (last('gpuproc._other.vram_mb') || 0);
-    stackedBarH(body('vram_split'), [
-      { label: 'torch cấp phát', value: torchAlloc, color: 'var(--cyan)' },
-      { label: 'torch giữ chưa dùng', value: Math.max(0, torchRes - torchAlloc), color: '#0e7490' },
-      { label: 'CUDA context + cuBLAS', value: Math.max(0, procVram - torchRes), color: 'var(--violet)' },
-      { label: 'tiến trình khác', value: others, color: 'var(--amber)' },
-    ], { total: gpuTotal, unit: 'MB' });
+    const segs = [
+      { label: 'speech · torch cấp phát', value: torchAlloc, color: 'var(--cyan)' },
+      { label: 'speech · torch giữ chưa dùng',
+        value: Math.max(0, torchRes - torchAlloc), color: '#0e7490' },
+      { label: 'speech · CTranslate2 + CUDA context',
+        value: Math.max(0, procVram - torchRes), color: 'var(--violet)' },
+    ];
+    const palette = ['var(--green)', 'var(--amber)', '#60a5fa', '#f472b6'];
+    svcs.filter(s => s !== 'speech').forEach(s => {
+      const v = last(`gpuproc.${s}.vram_mb`) || 0;
+      if (v > 0) segs.push({ label: s, value: v, color: palette[segs.length % palette.length] });
+    });
+    const outside = last('gpuproc._other.vram_mb') || 0;
+    if (outside > 0) segs.push({ label: 'ngoài panel', value: outside, color: 'var(--fg-dim)' });
+    stackedBarH(body('vram_split'), segs, { total: gpuTotal, unit: 'MB' });
 
     // ── Độ trễ ──
     lineMulti(body('lat_dep'), {
@@ -355,9 +456,39 @@ const ChartsTab = {
         { label: 'lỗi 5xx', data: g('req.err_rpm'), color: 'var(--red)' },
       ],
     });
+    // Tỉ lệ lỗi: ba đường thô (rpm / err / err4xx) không trả lời được câu "có
+    // đang hỏng không" — 5 lỗi trên 10 request khác hẳn 5 lỗi trên 500. Chia ra
+    // mới thành chỉ số đọc được. Ô không có request nào thì để TRỐNG, đừng vẽ 0%:
+    // "không lỗi" và "không có ai gọi" là hai chuyện khác nhau.
+    const rpm = g('req.rpm') || [];
+    const e5 = g('req.err_rpm') || [];
+    const e4 = g('req.err4xx_rpm') || [];
+    const pct = (arr) => rpm.map((tot, i) => {
+      const e = (arr[i] == null) ? 0 : arr[i];
+      if (tot == null || tot <= 0) return null;
+      return 100 * e / tot;
+    });
+    lineMulti(body('err_rate'), {
+      ...base, unit: '%', yMax: 100,
+      series: [
+        { label: 'lỗi 5xx %', data: pct(e5), color: 'var(--red)' },
+        { label: 'lỗi 4xx %', data: pct(e4), color: 'var(--amber)' },
+        { label: 'ngưỡng 5%', data: rpm.map(v => (v == null || v <= 0) ? null : 5),
+          color: 'var(--fg-dim)', width: 1, dash: '4 4' },
+      ],
+    });
+
     barsH(body('top_path'), (this.meta && this.meta.top_paths) || [], null);
 
     LoadTest.render(base);
+
+    this._renderWhen(d);
+    const retain = document.getElementById('ch-retain');
+    if (retain && this.meta && this.meta.archive && this.meta.archive.ok) {
+      const a = this.meta.archive;
+      const f = t => new Date(t * 1000).toLocaleString('vi-VN', { hour12: false });
+      retain.textContent = a.from ? `đĩa có dữ liệu từ ${f(a.from)}` : '';
+    }
 
     const st = document.getElementById('ch-stat');
     if (st && this.meta && this.meta.stats) {

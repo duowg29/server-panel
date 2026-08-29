@@ -181,6 +181,12 @@ mịn khác nhau. Gộp bằng đúng hàm mà series đó dùng (probe latency 
 làm phẳng mất spike). Mốc càng rộng thì panel poll càng thưa (24 giờ: 30s/lần) — dữ
 liệu trên đĩa chỉ đổi mỗi 30 giây, hỏi dày hơn chỉ tốn công quét lại bảng.
 
+**Xem lại quá khứ.** Nút *⏴ Lùi / Tiến ⏵ / ⏺ Bây giờ* ở chân trang biểu đồ dịch cửa sổ
+đi nửa bước mỗi lần, tới hết 72 giờ archive giữ được. Không có nó thì mọi cửa sổ đều kết
+thúc ở hiện tại, nghĩa là chỉ xem được 24 giờ gần nhất — 2/3 dữ liệu lưu trên đĩa không
+chạm tới được. Đang xem quá khứ thì panel **thôi poll**: dữ liệu cũ không đổi nữa, hỏi lại
+chỉ tốn một lượt quét đĩa. API: `/api/series?...&end_ts=<epoch>`.
+
 **Trạng thái theo thời gian.** Mỗi service một dải màu ONLINE/DEGRADED/OFFLINE, chạy
 suốt cửa sổ đang xem và xem lại được 72 giờ. Đây là chỗ trả lời câu "chiều nay lúc 3h
 chuyện gì xảy ra". Ô gộp lấy trạng thái **xấu nhất** trong ô: một ô 30 phút có 10 giây
