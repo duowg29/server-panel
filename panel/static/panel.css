@@ -203,7 +203,13 @@ a:hover { text-decoration: underline; }
 .card.primary {
   border-color: rgba(34, 211, 238, .35);
   background: linear-gradient(180deg, rgba(34, 211, 238, .07), var(--bg-panel) 60%);
-  grid-column: 1 / -1;
+  /* Rộng gấp đôi card thường, KHÔNG phải trọn hàng.
+     `1 / -1` cũ kéo nó hết chiều ngang, mà nội dung chỉ có tên + thanh tiến độ
+     + một hàng nút — thừa ra một mảng trống lớn bên phải, lại nằm cạnh card
+     composite cỡ thường nên nhìn lệch hẳn.
+     Độ nổi bật vốn đã có sẵn ở viền cyan, nền gradient và tên chữ to hơn.
+     Màn hẹp chỉ đủ 1 cột thì `span 2` tự thu về full width. */
+  grid-column: span 2;
 }
 .card.busy { border-color: var(--cyan); }
 

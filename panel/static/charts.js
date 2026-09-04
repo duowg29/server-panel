@@ -71,6 +71,14 @@ function fmtNum(v, unit) {
   return unit ? s + unit : s;
 }
 
+/** Dung lượng tính bằng MB. fmtNum() không dùng được ở đây: nó rút gọn theo
+    bội số 1000 nên 16380 MB ra "16.4kMB" — vừa sai bội số (nhớ phải là 1024)
+    vừa đọc không ra nghĩa. */
+function fmtMB(v) {
+  if (v == null || !isFinite(v)) return '—';
+  return v >= 1024 ? (v / 1024).toFixed(1) + ' GB' : Math.round(v) + ' MB';
+}
+
 function fmtBytes(v) {
   if (v == null) return '—';
   const u = ['B', 'K', 'M', 'G', 'T'];
@@ -111,6 +119,14 @@ function _lonePoints(data, x, y) {
     }
   });
   return out;
+}
+
+/** Có mẫu thật nào không? `data` tồn tại nhưng toàn null là chuyện thường:
+    sampler vẫn đẩy `null` đều đặn khi service không kết nối được (xem
+    series.py — null là KHÔNG CÓ DỮ LIỆU, khác hẳn 0). Chỉ đếm độ dài mảng thì
+    vẫn vẽ ra một cái lưới trống trục 0–1, nhìn như biểu đồ hỏng. */
+function _hasData(series) {
+  return series.some(s => (s.data || []).some(v => v != null));
 }
 
 function _niceMax(v) {
@@ -244,7 +260,10 @@ function _attachHover(el, cfg) {
 function lineMulti(el, opts) {
   const { t0, bucket_s, series = [], unit = '', runs = null, yMax: forceMax } = opts;
   const n = series.reduce((m, s) => Math.max(m, (s.data || []).length), 0);
-  if (!n) { el.innerHTML = '<div class="nodata">chưa có dữ liệu</div>'; return; }
+  if (!n || !_hasData(series)) {
+    el.innerHTML = '<div class="nodata">chưa có dữ liệu</div>';
+    return;
+  }
 
   const f = _frame({ H: opts.H || 175 });
   let peak = 0;
@@ -302,7 +321,10 @@ function _legend(series) {
 function stackedArea(el, opts) {
   const { t0, bucket_s, series = [], unit = '', runs = null } = opts;
   const n = series.reduce((m, s) => Math.max(m, (s.data || []).length), 0);
-  if (!n) { el.innerHTML = '<div class="nodata">chưa có dữ liệu</div>'; return; }
+  if (!n || !_hasData(series)) {
+    el.innerHTML = '<div class="nodata">chưa có dữ liệu</div>';
+    return;
+  }
 
   const f = _frame({ H: opts.H || 175 });
   // Trong MỘT ô, null coi là 0 cho phép cộng dồn — không thì không xếp chồng
@@ -459,6 +481,8 @@ function stateTimeline(el, opts) {
 function stackedBarH(el, segs, opts = {}) {
   const total = opts.total || segs.reduce((a, s) => a + Math.max(0, s.value || 0), 0) || 1;
   const unit = opts.unit || '';
+  //: bộ định dạng riêng — dùng khi fmtNum() không hợp đơn vị (xem fmtMB)
+  const f = opts.fmt || (v => fmtNum(v, unit));
   let bar = '';
   let acc = 0;
   segs.forEach((s, k) => {
@@ -466,7 +490,7 @@ function stackedBarH(el, segs, opts = {}) {
     if (v <= 0) return;
     const w = (v / total) * 100;
     bar += `<span class="seg" style="width:${w}%;background:${s.color || SERIES_COLORS[k % SERIES_COLORS.length]}"
-      title="${s.label}: ${fmtNum(v, unit)}"></span>`;
+      title="${s.label}: ${f(v)}"></span>`;
     acc += v;
   });
   const rest = Math.max(0, total - acc);
@@ -475,8 +499,8 @@ function stackedBarH(el, segs, opts = {}) {
   el.innerHTML = `<div class="hbar">${bar}</div>
     <div class="hbar__legend">` + segs.map((s, k) =>
       `<span><i style="background:${s.color || SERIES_COLORS[k % SERIES_COLORS.length]}"></i>
-       ${s.label}<b>${fmtNum(s.value, unit)}</b></span>`).join('')
-    + (rest > 0 ? `<span><i class="rest"></i>còn trống<b>${fmtNum(rest, unit)}</b></span>` : '')
+       ${s.label}<b>${f(s.value)}</b></span>`).join('')
+    + (rest > 0 ? `<span><i class="rest"></i>còn trống<b>${f(rest)}</b></span>` : '')
     + `</div>`;
 }
 

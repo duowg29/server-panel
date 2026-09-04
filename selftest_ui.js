@@ -304,5 +304,25 @@ const T0 = 1750000000;   // mốc cố định: test không được phụ thu�
     `display=${more0.style.display}`);
 }
 
+// ── Chart toàn null phải báo "chưa có dữ liệu", không vẽ lưới trống ──
+{
+  const el2 = box();
+  // sampler đẩy null đều đặn khi service không kết nối được -> mảng CÓ độ dài
+  // nhưng KHÔNG có mẫu nào. Trước đây lineMulti vẫn vẽ ra lưới trục 0-1.
+  C.lineMulti(el2, { t0: T0, bucket_s: 30, unit: 'ms',
+    series: [{ label: 'p50', data: [null, null, null] },
+             { label: 'p90', data: [null, null, null] }] });
+  check('series toàn null -> báo chưa có dữ liệu', el2.innerHTML.includes('nodata'),
+    el2.innerHTML.slice(0, 60));
+
+  C.lineMulti(el2, { t0: T0, bucket_s: 30, unit: 'ms',
+    series: [{ label: 'p50', data: [null, 0, null] }] });
+  check('số 0 vẫn là dữ liệu thật -> có vẽ', el2.innerHTML.includes('<svg'));
+
+  C.stackedArea(el2, { t0: T0, bucket_s: 30, unit: 'MB',
+    series: [{ label: 'a', data: [null, null] }] });
+  check('vùng chồng toàn null -> báo chưa có dữ liệu', el2.innerHTML.includes('nodata'));
+}
+
 console.log(fails ? `\n${fails} test HỎNG` : '\ntất cả test DOM pass');
 process.exit(fails ? 1 : 0);

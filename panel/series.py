@@ -108,12 +108,16 @@ class SeriesStore:
         dq = self._data.get(name)
         if dq is None:
             if len(self._data) >= MAX_SERIES:
-                if name not in self.dropped:
-                    self.dropped.add(name)
+                # Cảnh báo ĐÚNG MỘT LẦN. Chạm trần rồi thì mọi series mới sau đó
+                # đều bị bỏ — in một dòng cho mỗi tên là hàng chục dòng y hệt,
+                # lấp mất chính dòng đầu tiên. Số lượng vẫn đếm đủ trong
+                # `dropped` và hiện ở chân trang biểu đồ.
+                if not self.dropped:
                     log.warning(
                         "chạm trần %d series — BỎ %r và mọi series mới sau đó. "
                         "Thêm service thì nâng MAX_SERIES.", MAX_SERIES, name,
                     )
+                self.dropped.add(name)
                 return
             dq = self._data[name] = deque(maxlen=MAX_POINTS)
         dq.append((ts, None if value is None else float(value)))

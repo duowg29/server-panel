@@ -208,9 +208,9 @@ const ChartsTab = {
       </div>
       <div class="chartfoot">
         <span>Thời điểm:</span>
-        <button id="ch-back" title="Lùi nửa cửa sổ">⏴  Lùi</button>
-        <button id="ch-fwd" title="Tiến nửa cửa sổ">Tiến  ⏵</button>
-        <button id="ch-now" class="on" title="Bám theo hiện tại">⏺  Bây giờ</button>
+        <button id="ch-back" title="Lùi nửa cửa sổ">◀  Lùi</button>
+        <button id="ch-fwd" title="Tiến nửa cửa sổ">Tiến  ▶</button>
+        <button id="ch-now" class="on" title="Bám theo hiện tại">●  Bây giờ</button>
         <span id="ch-when" class="sub"></span>
         <span style="flex:1"></span>
         <span class="sub" id="ch-retain"></span>
@@ -399,7 +399,7 @@ const ChartsTab = {
     });
     const outside = last('gpuproc._other.vram_mb') || 0;
     if (outside > 0) segs.push({ label: 'ngoài panel', value: outside, color: 'var(--fg-dim)' });
-    stackedBarH(body('vram_split'), segs, { total: gpuTotal, unit: 'MB' });
+    stackedBarH(body('vram_split'), segs, { total: gpuTotal, fmt: fmtMB });
 
     // ── Độ trễ ──
     lineMulti(body('lat_dep'), {
@@ -529,6 +529,11 @@ const ChartsTab = {
         <td>${fmtBytes(last(`proc.${s}.io_write_bps`))}</td></tr>`;
     }).filter(Boolean);
     const el = document.querySelector('#ch-proctable .chart__body');
+    if (el && !rows.length) {
+      // Bảng chỉ có hàng tiêu đề nhìn như hỏng — nói thẳng là chưa có gì chạy.
+      el.innerHTML = '<div class="nodata">chưa có service nào chạy</div>';
+      return;
+    }
     if (el) {
       el.innerHTML = `<table class="ptable">
         <thead><tr><th>service</th><th>PID</th><th>CPU</th><th>RAM</th><th>VRAM</th>
