@@ -426,7 +426,7 @@ async def test_health_dedup(tmp: Path) -> None:
       - id: a_alt
         name: A alt
         group: h
-        health: {{ url: "http://127.0.0.1:9/health", interval_s: 30 }}
+        health: {{ url: "http://127.0.0.1:9/health", interval_s: 30, timeout_s: 5 }}
       - id: b
         name: B
         group: t
@@ -438,9 +438,11 @@ async def test_health_dedup(tmp: Path) -> None:
 
     poller = HealthPoller(cfg, Supervisor(cfg))
     calls: list[str] = []
+    timeouts: dict[str, float | None] = {}
 
-    async def fake_fetch(url: str):
+    async def fake_fetch(url: str, timeout_s: float | None = None):
         calls.append(url)
+        timeouts[url] = timeout_s
         from panel.health import Fetched
         return Fetched(payload={"status": "ok"}, latency_ms=5)
 
@@ -451,6 +453,12 @@ async def test_health_dedup(tmp: Path) -> None:
     check("cùng URL chỉ GET một lần", calls.count("http://127.0.0.1:9/health") == 1,
           f"gọi {calls.count('http://127.0.0.1:9/health')} lần")
     check("URL khác vẫn được gọi riêng", "http://127.0.0.1:10/health" in calls)
+    check("chung URL: chờ theo timeout_s dài nhất",
+          timeouts.get("http://127.0.0.1:9/health") == 5.0,
+          str(timeouts.get("http://127.0.0.1:9/health")))
+    check("không khai timeout_s thì dùng mặc định",
+          timeouts.get("http://127.0.0.1:10/health") == cfg.health_timeout_s,
+          str(timeouts.get("http://127.0.0.1:10/health")))
     check("cả hai service dùng chung kết quả đều có trạng thái",
           poller.state_of("a") != "UNKNOWN" and poller.state_of("a_alt") != "UNKNOWN",
           f"a={poller.state_of('a')} a_alt={poller.state_of('a_alt')}")
@@ -466,6 +474,26 @@ async def test_health_dedup(tmp: Path) -> None:
     calls.clear()
     await poller.tick()
     check("chưa tới hạn thì không gọi lại", calls == [], str(calls))
+
+
+def test_hidden_group_no_incidents(tmp: Path) -> None:
+    """Nhóm ẩn (vllm) chung port với hybrid: health chập chờn của nó từng bắn
+    hàng chục toast "Intent API (vLLM): ONLINE → OFFLINE" dù không có card nào."""
+    print("\n== nhóm ẩn không bắn sự cố ==")
+    from panel.main import is_hidden_service
+    cfg_p = tmp / "hidden.yaml"
+    cfg_p.write_text(textwrap.dedent(f"""
+    version: 1
+    defaults: {{ root: {tmp}, log_dir: {tmp}/logs }}
+    groups: [{{ id: t, label: T }}, {{ id: h, label: H, hidden: true }}]
+    services:
+      - {{ id: shown, name: Shown, group: t, health: {{ url: "http://127.0.0.1:9/health" }} }}
+      - {{ id: ghost, name: Ghost, group: h, health: {{ url: "http://127.0.0.1:9/health" }} }}
+    """))
+    cfg = cfgmod.load(cfg_p)
+    check("service nhóm ẩn bị tắt sự cố", is_hidden_service(cfg, "ghost"))
+    check("service hiện vẫn ghi sự cố", not is_hidden_service(cfg, "shown"))
+    check("id lạ không bị coi là ẩn", not is_hidden_service(cfg, "nope"))
 
 
 def test_member_death_signal(tmp: Path) -> None:
@@ -578,6 +606,7 @@ async def main() -> int:
         await test_metrics(tmp, cfg)
         test_series_archive(tmp)
         await test_health_dedup(tmp)
+        test_hidden_group_no_incidents(tmp)
         test_member_death_signal(tmp)
         test_series_end_ts(tmp)
         test_vram_warning(tmp)

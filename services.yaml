@@ -297,10 +297,11 @@ services:
       grace_s: 5
     health:
       url: http://127.0.0.1:8088/health
-      # /health của Intent API ping Postgres trên Supabase cloud MỖI LẦN bị hỏi
-      # (SELECT 1 đi ra internet, ~1.6s). Badge chỉ cần status + cache.ready,
-      # không cần db — nên đừng hỏi 3s/lần. 30s là quá đủ để thấy nó chết.
+      # /health của Intent API ping Postgres trên Supabase cloud (~1.7s). Server
+      # đã nhớ kết quả DB 30s, nhưng lần ping thật vẫn ~2s — sát timeout mặc định
+      # 2s làm badge chập chờn, nên chờ riêng 5s. 30s/lần là đủ thấy nó chết.
       interval_s: 30
+      timeout_s: 5
       rules:
         online: json.status == 'ok' and json.cache.ready
         degraded: json.status == 'ok' or json.status == 'degraded'
@@ -522,10 +523,9 @@ services:
       grace_s: 5
     health:
       url: http://127.0.0.1:8088/health
-      # /health của Intent API ping Postgres trên Supabase cloud MỖI LẦN bị hỏi
-      # (SELECT 1 đi ra internet, ~1.6s). Badge chỉ cần status + cache.ready,
-      # không cần db — nên đừng hỏi 3s/lần. 30s là quá đủ để thấy nó chết.
+      # Cùng endpoint với Intent API — xem ghi chú timeout_s ở đó.
       interval_s: 30
+      timeout_s: 5
       rules:
         online: json.status == 'ok' and json.cache.ready
         degraded: json.status == 'ok' or json.status == 'degraded'
