@@ -116,6 +116,9 @@ class HealthSpec:
     #: cloud mỗi lần bị hỏi, nên hỏi 3s/lần là bắn hàng chục nghìn query/ngày
     #: ra ngoài internet chỉ để tô một badge.
     interval_s: float | None = None
+    #: thời gian chờ riêng, ghi đè `defaults.health_timeout_s`. Dùng khi /health
+    #: chậm tự nhiên — chờ sát ngưỡng làm badge chập chờn ONLINE/OFFLINE.
+    timeout_s: float | None = None
 
 
 @dataclass
@@ -366,9 +369,12 @@ def _parse_service(d: dict[str, Any]) -> Service:
             detail=list(h.get("detail") or []),
             public_url_from=h.get("public_url_from"),
             interval_s=(float(h["interval_s"]) if h.get("interval_s") is not None else None),
+            timeout_s=(float(h["timeout_s"]) if h.get("timeout_s") is not None else None),
         )
         if health.interval_s is not None and health.interval_s <= 0:
             raise ConfigError(f"[{d['id']}] health.interval_s phải > 0")
+        if health.timeout_s is not None and health.timeout_s <= 0:
+            raise ConfigError(f"[{d['id']}] health.timeout_s phải > 0")
         for name, expr in health.rules.items():
             if name not in {"online", "degraded", "starting"}:
                 raise ConfigError(f"[{d['id']}] health rule lạ: {name}")

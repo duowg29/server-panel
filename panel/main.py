@@ -79,6 +79,11 @@ async def lifespan(app: FastAPI):
         if not should_record(prev, state):
             return
         svc = app.state.cfg.services.get(svc_id)
+        # Nhóm ẩn (vd. vllm) chung port với nhóm đang chạy: health của chúng vẫn
+        # được hỏi để kiểm tra xung đột, nhưng KHÔNG được bắn sự cố/thông báo —
+        # người dùng không thấy card nào mà toast cứ nhảy ONLINE → OFFLINE.
+        if is_hidden_service(app.state.cfg, svc_id):
+            return
         incidents.record(
             svc_id=svc_id,
             name=svc.name if svc else svc_id,
@@ -685,6 +690,14 @@ def _really_running(app_: FastAPI, svc_id: str) -> bool:
         return _pgrep_alive(svc.stop.pattern)
     # không có cách xác minh process → tin health
     return True
+
+
+def is_hidden_service(cfg: Config, svc_id: str) -> bool:
+    """Service thuộc nhóm `hidden: true` — không hiện card, không bắn sự cố."""
+    svc = cfg.services.get(svc_id)
+    if svc is None:
+        return False
+    return any(g.id == svc.group and g.hidden for g in cfg.groups)
 
 
 def _blocked_by(app_: FastAPI, svc) -> list[str]:

@@ -167,19 +167,31 @@ class HealthPoller:
 
     async def _fetch_all(self, due: list[Service]) -> dict[str, "Fetched"]:
         """Một lần GET cho mỗi URL riêng biệt trong lứa này."""
-        urls = {u for u in (self._probe_key(s) for s in due) if u}
-        if not urls:
+        # Nhiều service chung URL: chờ theo timeout DÀI nhất trong số đó.
+        timeouts: dict[str, float] = {}
+        for s in due:
+            u = self._probe_key(s)
+            if not u:
+                continue
+            t = self._timeout_for(s)
+            timeouts[u] = max(timeouts.get(u, 0.0), t)
+        if not timeouts:
             return {}
-        ordered = sorted(urls)
-        got = await asyncio.gather(*(self._fetch_one(u) for u in ordered))
+        ordered = sorted(timeouts)
+        got = await asyncio.gather(*(self._fetch_one(u, timeouts[u]) for u in ordered))
         return dict(zip(ordered, got))
 
-    async def _fetch_one(self, url: str) -> "Fetched":
+    def _timeout_for(self, svc: Service) -> float:
+        if svc.health and svc.health.timeout_s:
+            return svc.health.timeout_s
+        return self.cfg.health_timeout_s
+
+    async def _fetch_one(self, url: str, timeout_s: float | None = None) -> "Fetched":
         if self._client is None:
             return Fetched(error="no_client")
         t0 = time.perf_counter()
         try:
-            r = await self._client.get(url)
+            r = await self._client.get(url, timeout=timeout_s or self.cfg.health_timeout_s)
             ms = int((time.perf_counter() - t0) * 1000)
             if r.status_code >= 400:
                 return Fetched(latency_ms=ms, error=f"HTTP {r.status_code}")
@@ -203,7 +215,7 @@ class HealthPoller:
         payload: Any = None
         if svc.health and svc.health.url:
             if fetched is None:                      # gọi lẻ (test, wake)
-                fetched = await self._fetch_one(svc.health.url)
+                fetched = await self._fetch_one(svc.health.url, self._timeout_for(svc))
             payload = fetched.payload
             st.latency_ms = fetched.latency_ms
             st.error = fetched.error
