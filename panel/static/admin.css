@@ -341,3 +341,126 @@ h4.ksub { margin-top: 1rem; }
 .kscan tr.dup td { opacity: .55; }
 .kscan .kscan__src input[type=file] { width: auto; flex: 1; }
 .kscan .kscan__src input.ainput, .kscan .btns select { width: auto; }
+
+/* ══════════════════════════════════════════════════════════════════════
+   Giao diện v2 — cùng nền tối / màu cyan của panel, nhưng:
+   · font Ubuntu (có sẵn trên máy) thay cho font mono: dấu tiếng Việt không vỡ
+   · tiêu đề chữ thường, không giãn chữ; số dùng font mono, chữ số đều nhau
+   · thẻ, tab, cây nội dung, bảng thoáng và bo tròn hơn
+   ══════════════════════════════════════════════════════════════════════ */
+body.admin {
+  --font-ui: "Ubuntu", "Noto Sans", "DejaVu Sans", system-ui, sans-serif;
+  --font-num: "Ubuntu Mono", "Noto Sans Mono", "DejaVu Sans Mono", monospace;
+  --r: 10px;
+  --r-sm: 7px;
+  font-family: var(--font-ui);
+  font-size: 14px;
+}
+body.admin button, body.admin .btn, body.admin input, body.admin select, body.admin textarea,
+body.admin .ainput, body.admin .modal input, body.admin .modal select, body.admin .modal textarea {
+  font-family: var(--font-ui);
+  letter-spacing: 0;
+}
+body.admin button, body.admin .btn { font-size: 13px; font-weight: 500; border-radius: var(--r-sm); min-height: 32px; }
+body.admin .dgrid td .btns button { min-height: 28px; }
+
+/* đầu trang */
+body.admin .topbar { font-family: var(--font-num); }
+body.admin .masthead { padding-top: .9rem; padding-bottom: .9rem; }
+body.admin .masthead h1 { font-family: var(--font-num); font-size: 1.6rem; }
+body.admin .masthead .tag { font-size: 12.5px; }
+body.admin .statusstrip .chip { font-size: 12.5px; border-radius: 999px; }
+body.admin .statusstrip .chip b { font-family: var(--font-num); }
+
+/* menu trái */
+body.admin .admin-shell { grid-template-columns: 14.5rem minmax(0, 1fr); gap: 1.4rem; padding-top: .3rem; }
+body.admin .anav { padding: .6rem; border-radius: 14px; background: linear-gradient(180deg, var(--bg-panel), #0f141c); }
+body.admin .anav__group { font-size: 11px; letter-spacing: .1em; margin: .9rem .5rem .3rem; }
+body.admin .anav__item { position: relative; font-size: 14px; min-height: 36px; padding: .35rem .65rem; border-radius: 9px; }
+body.admin .anav__item .ic { width: 1.4rem; font-size: 15px; }
+body.admin .anav__item.on { background: rgba(34, 211, 238, .1); border-color: transparent; color: var(--fg-bright); font-weight: 500; }
+body.admin .anav__item.on::before {
+  content: ""; position: absolute; left: -.6rem; top: 8px; bottom: 8px; width: 3px;
+  border-radius: 0 3px 3px 0; background: var(--cyan); box-shadow: var(--glow-cyan);
+}
+body.admin .anav__wip { font-size: 10.5px; }
+
+/* tiêu đề trang */
+body.admin .apage__head { margin-bottom: 1.1rem; gap: .3rem 1rem; align-items: center; }
+body.admin .apage__head h2 { font-size: 21px; font-weight: 600; letter-spacing: 0; text-transform: none; }
+body.admin .apage__head p { font-size: 13px; order: 3; }
+body.admin .apage__bar { gap: .45rem; }
+
+/* thẻ số liệu */
+body.admin .kkpis { grid-template-columns: repeat(auto-fill, minmax(10rem, 1fr)); gap: .7rem; margin-bottom: 1.2rem; }
+body.admin .kpi {
+  position: relative; overflow: hidden; padding: .8rem 1rem .75rem; border-radius: 12px;
+  background: linear-gradient(160deg, var(--bg-raise), var(--bg-panel) 70%);
+}
+body.admin .kpi::before { content: ""; position: absolute; inset: 0 auto 0 0; width: 3px; background: var(--k, var(--cyan)); opacity: .9; }
+body.admin .kkpis .kpi:nth-child(4n+2) { --k: var(--green); }
+body.admin .kkpis .kpi:nth-child(4n+3) { --k: var(--violet); }
+body.admin .kkpis .kpi:nth-child(4n+4) { --k: var(--amber); }
+body.admin .kpi h4 { font-size: 12.5px; font-weight: 500; letter-spacing: 0; text-transform: none; }
+body.admin .kpi__v { font-family: var(--font-num); font-size: 1.65rem; font-weight: 700; font-variant-numeric: tabular-nums; margin-top: .15rem; }
+body.admin .kpi__s { font-size: 12px; }
+
+/* tab: gạch chân thay cho thẻ */
+body.admin .tabs { background: transparent; padding: 0; gap: .2rem; border-bottom: 1px solid var(--line); margin-bottom: .2rem; flex-wrap: wrap; }
+body.admin .tabs button {
+  min-height: 40px; padding: 0 .9rem; border: none; border-radius: 0; background: transparent;
+  font-size: 14px; color: var(--fg-dim); box-shadow: none; margin-bottom: -1px; border-bottom: 2px solid transparent;
+}
+body.admin .tabs button:hover { color: var(--fg-bright); background: transparent; }
+body.admin .tabs button.on { color: var(--cyan); border-bottom-color: var(--cyan); background: transparent; box-shadow: none; font-weight: 500; }
+body.admin .ktabs__body { padding-top: 1rem; }
+
+/* cây nội dung */
+body.admin .ktree { gap: .8rem; margin-bottom: 1.4rem; }
+body.admin .ktree__col { border-radius: 12px; min-height: 16rem; overflow: hidden; }
+body.admin .ktree__h { padding: .6rem .8rem; background: var(--bg-raise); }
+body.admin .ktree__h b { font-size: 13.5px; font-weight: 600; letter-spacing: 0; text-transform: none; color: var(--fg-bright); }
+body.admin .ktree__h .muted {
+  font-family: var(--font-num); font-size: 11.5px; padding: 0 .45rem; border-radius: 999px; border: 1px solid var(--line-hot);
+}
+body.admin .ktree__h .muted + button, body.admin .ktree__h button { margin-left: auto; }
+body.admin .ktree__h .muted { margin-right: 0; }
+body.admin .ktree__list { padding: .4rem; max-height: 26rem; }
+body.admin .ktree__it { position: relative; padding: .45rem .6rem; border-radius: 8px; font-size: 13.5px; gap: .5rem; }
+body.admin .ktree__it .s { font-family: var(--font-num); font-size: 11.5px; color: var(--fg-dim); }
+body.admin .ktree__it.on { background: rgba(34, 211, 238, .12); color: var(--fg-bright); }
+body.admin .ktree__it.on::before { content: ""; position: absolute; left: 0; top: 6px; bottom: 6px; width: 3px; border-radius: 3px; background: var(--cyan); }
+body.admin .ktree__it.on .s { color: var(--cyan); }
+
+/* bảng */
+body.admin .dgrid-wrap, body.admin .ktable .dgrid-wrap { border-radius: 12px; }
+body.admin .dgrid { font-size: 13.5px; }
+body.admin .dgrid th { font-size: 12.5px; font-weight: 600; letter-spacing: 0; padding: .55rem .75rem; color: var(--fg-dim); background: var(--bg-raise); }
+body.admin .dgrid td { padding: .5rem .75rem; }
+body.admin .dgrid tbody tr:nth-child(even) td { background: rgba(255, 255, 255, .012); }
+body.admin .dgrid tbody tr:hover td { background: rgba(34, 211, 238, .06); }
+body.admin .tables__pager, body.admin .ktable .tables__pager { font-size: 13px; }
+body.admin .kbadge { font-size: 11.5px; font-weight: 500; padding: .05rem .55rem; }
+
+/* tiêu đề nhỏ, khối, form, modal */
+body.admin .ksection__h h3, body.admin h4.ksub, body.admin .kbars h4 {
+  font-size: 15px; font-weight: 600; letter-spacing: 0; text-transform: none; color: var(--fg-bright);
+}
+body.admin h4.ksub { font-size: 14px; }
+body.admin .ksection__h .muted { font-family: var(--font-num); }
+body.admin .acard { border-radius: 12px; padding: .9rem 1rem; }
+body.admin .acard h3 { font-size: 15px; font-weight: 600; }
+body.admin .acard p { font-size: 13px; line-height: 1.55; }
+body.admin .modal { border-radius: 14px; }
+body.admin .modal h3 { font-size: 16px; font-weight: 600; letter-spacing: 0; text-transform: none; color: var(--fg-bright); padding: .9rem 1.1rem; }
+body.admin .modal label, body.admin .acard .kform label {
+  font-size: 12.5px; font-weight: 500; letter-spacing: 0; text-transform: none; color: var(--fg-dim);
+}
+body.admin .modal .body { font-size: 14px; }
+body.admin .tables__head h2 { font-size: 19px; font-weight: 600; }
+body.admin .tables__item { font-family: var(--font-num); font-size: 13px; }
+body.admin code, body.admin pre, body.admin .kfacts .v { font-family: var(--font-num); }
+body.admin .kfacts { font-size: 13.5px; }
+body.admin .aempty { border-radius: 12px; }
+body.admin .toast { font-family: var(--font-ui); }
+.tables__pager .pg { margin: 0; }

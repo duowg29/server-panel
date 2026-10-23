@@ -123,7 +123,7 @@ const Kit = {
       const next = el('button', '', '›');
       next.disabled = st.page >= pages - 1;
       next.onclick = () => { st.page++; draw(); };
-      pager.append(prev, el('span', 'muted', `trang ${st.page + 1}/${pages}`), next);
+      pager.append(prev, el('span', 'muted pg', `trang ${st.page + 1}/${pages}`), next);
     };
     draw();
     return {
