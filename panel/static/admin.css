@@ -251,3 +251,55 @@ code {
   .admin-shell, .tables { grid-template-columns: 1fr; }
   .anav, .tables__side { position: static; max-height: none; }
 }
+
+/* ── Kit: thẻ số liệu, biểu đồ, bảng, form ────────────────────────── */
+.kkpis { display: grid; grid-template-columns: repeat(auto-fill, minmax(11rem, 1fr)); gap: .6rem; margin-bottom: .8rem; }
+.kkpis .kpi { margin: 0; }
+.kpi__s { font-size: 11.5px; color: var(--fg-dim); margin-top: .1rem; }
+.kgrid3 { display: grid; grid-template-columns: repeat(auto-fill, minmax(18rem, 1fr)); gap: .7rem; margin-bottom: .8rem; }
+.kbars { background: var(--bg-panel); border: 1px solid var(--line); border-radius: var(--r); padding: .7rem .8rem; }
+.kbars h4, h4.ksub {
+  margin: 0 0 .5rem; font-size: 11px; letter-spacing: .14em; text-transform: uppercase; color: var(--fg-dim);
+}
+h4.ksub { margin-top: 1rem; }
+.kbars__r { display: grid; grid-template-columns: 9rem 1fr 3.5rem; gap: .5rem; align-items: center; font-size: 12.5px; margin: .2rem 0; }
+.kbars__r .l { overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
+.kbars__r .b { height: 8px; background: var(--bg-sunken); border-radius: 4px; overflow: hidden; }
+.kbars__r .b i { display: block; height: 100%; background: var(--cyan); box-shadow: var(--glow-cyan); }
+.kbars__r .n { text-align: right; color: var(--fg-bright); }
+.kfilters { display: flex; flex-wrap: wrap; gap: .4rem; margin-bottom: .5rem; }
+.ktable__bar { display: flex; gap: .4rem; justify-content: flex-end; margin-bottom: .4rem; }
+.ktable .dgrid-wrap { max-height: none; }
+.kbadge {
+  display: inline-block; font-size: 11px; font-weight: 700; padding: 0 .45rem; border-radius: 999px;
+  border: 1px solid var(--line-hot); color: var(--fg-dim); white-space: nowrap;
+}
+.kbadge.ok { color: var(--green); border-color: rgba(52, 211, 153, .45); background: var(--green-dim); }
+.kbadge.warn { color: var(--amber); border-color: rgba(251, 191, 36, .45); background: rgba(251, 191, 36, .1); }
+.kbadge.bad { color: var(--red); border-color: rgba(248, 113, 113, .45); background: var(--red-dim); }
+.kuser { display: flex; flex-direction: column; line-height: 1.25; }
+.kuser b { color: var(--fg-bright); font-weight: 600; }
+.kuser .muted { font-size: 11.5px; }
+.dgrid td .btns { flex-wrap: nowrap; }
+.dgrid td .btns button { min-height: 26px; padding: .1rem .45rem; }
+.dgrid td select.ainput { min-height: 26px; padding: .05rem .3rem; font-size: 11.5px; }
+.kform { display: grid; grid-template-columns: 1fr 1fr; gap: 0 1rem; }
+.kform__f.full { grid-column: 1 / -1; }
+.kform textarea { min-height: 3.5rem; }
+.acard .kform input, .acard .kform select { width: 100%; }
+.acard .kform label { display: block; font-size: 11px; font-weight: 700; color: var(--fg-dim); margin: .6rem 0 .2rem; text-transform: uppercase; letter-spacing: .1em; }
+.acard .kform input, .acard .kform select, .acard .kform textarea {
+  min-height: 30px; background: var(--bg-sunken); border: 1px solid var(--line); color: var(--fg);
+  font-family: var(--font-mono); font-size: 12.5px; padding: .25rem .5rem; border-radius: var(--r-sm);
+}
+.acard > button { margin-top: .7rem; }
+.acard.danger { border-color: rgba(248, 113, 113, .4); }
+.acard.danger h3 { color: var(--red); }
+.ktabs__body { padding-top: .7rem; }
+.kfacts { display: grid; grid-template-columns: 12rem 1fr; gap: .25rem .8rem; font-size: 12.5px; }
+.kfacts .k { color: var(--fg-dim); }
+.kfacts .v { color: var(--fg-bright); word-break: break-all; }
+@media (max-width: 700px) { .kform { grid-template-columns: 1fr; } }
+.req { color: var(--red); }
+.modal .tabs { flex-wrap: wrap; }
+.kpi__v { overflow-wrap: anywhere; }
