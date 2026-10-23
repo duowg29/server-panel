@@ -13,6 +13,10 @@ Nút **⚙ Admin** mở trang quản trị dữ liệu TinyTalk trên Supabase (
 `tinytalk-admin`). Cần file `.env.admin` — chép từ [`.env.admin.example`](.env.admin.example),
 điền `SUPABASE_URL` + `SUPABASE_SERVICE_ROLE_KEY`. Khoá chỉ nằm ở backend; mở trang là **chỉ
 xem**, bật "Cho phép ghi" mới sửa được, mọi thay đổi vào `data/admin_audit.db`.
+Có: Tài khoản, Nội dung học (cây lộ trình → topic → unit, từ vựng, ngữ pháp, nhập hàng loạt,
+quét tài liệu), Thông báo, Phần thưởng, Thành tựu, Gói trả phí, Game, Nhiệm vụ, Bảng xếp hạng,
+Cộng đồng, TinyFarm, Bảng dữ liệu (mọi bảng), Nhật ký thay đổi. Quét ảnh / PDF scan cần
+`sudo apt install tesseract-ocr`.
 
 ---
 

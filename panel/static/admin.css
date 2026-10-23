@@ -334,3 +334,10 @@ h4.ksub { margin-top: 1rem; }
 .ksection__h button { margin-left: auto; }
 .ksection .ktable__bar { justify-content: flex-start; }
 .ksection .ktable__bar input { flex: 1; max-width: 22rem; }
+.kscan__src { display: flex; gap: .5rem; align-items: center; flex-wrap: wrap; margin: .6rem 0; }
+.kscan .dgrid-wrap { max-height: 52vh; margin-top: .5rem; }
+.kscan .dgrid td { padding: .15rem .3rem; }
+.kscan .dgrid td input.ainput { width: 100%; min-width: 7rem; min-height: 26px; }
+.kscan tr.dup td { opacity: .55; }
+.kscan .kscan__src input[type=file] { width: auto; flex: 1; }
+.kscan .kscan__src input.ainput, .kscan .btns select { width: auto; }

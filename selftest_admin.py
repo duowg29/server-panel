@@ -221,13 +221,14 @@ async def main() -> int:
     for k in ("SUPABASE_URL", "SUPABASE_SERVICE_ROLE_KEY"):
         os.environ.pop(k, None)
 
-    from panel.admin import routes, settings  # noqa: E402  (sau khi đặt biến môi trường)
+    from panel.admin import ocr, routes, settings  # noqa: E402  (sau khi đặt biến môi trường)
     from panel.admin.supa import _auth_headers
 
     fake = FakeSupabase()
     routes.POOL._transport = httpx.ASGITransport(app=fake.app)
     app = FastAPI()
     app.include_router(routes.router)
+    app.include_router(ocr.router)
     c = httpx.AsyncClient(transport=httpx.ASGITransport(app=app), base_url="http://t")
 
     print("== cấu hình")
@@ -323,6 +324,14 @@ async def main() -> int:
     check(r.status_code == 200 and d.get("tiny_farm_profile") == 2 and "tiny_farm_purchase" not in d, "xoá 8 bảng, giữ giao dịch")
     check(all(x["profileId"] == 8 for x in fake.rows["tiny_farm_stock"]) and len(fake.rows["tiny_farm_purchase"]) == 4,
           "chỉ đụng người chơi đó")
+
+    print("== quét tài liệu")
+    from panel.admin.ocr import words_of
+    ws = dict(words_of("The family's big FAMILY! Children and well-known cats; the cat sat. I'm ok bcd"))
+    check(ws.get("family") == 2 and "the" not in ws and ws.get("well-known") == 1, "tách từ, bỏ từ dừng, gộp hoa / sở hữu")
+    check("bcd" not in ws and "ok" not in ws, "bỏ từ ngắn / không có nguyên âm")
+    r = await c.post("/api/admin/ocr/extract", json={"name": "a.exe", "data": "AAAA"})
+    check(r.status_code == 415, "từ chối loại file lạ")
 
     print("== nhật ký")
     log = (await c.get("/api/admin/audit")).json()

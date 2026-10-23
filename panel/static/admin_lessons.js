@@ -53,9 +53,11 @@ const Lessons = {
     weight.onclick = () => this.weightModal();
     const bulk = Admin.writeOnly(el('button', '', '⇪  Nhập hàng loạt'));
     bulk.onclick = () => this.bulkModal();
+    const scan = el('button', '', '📄  Quét tài liệu');
+    scan.onclick = () => this.scanModal();
     const reload = el('button', '', '↻  Tải lại');
     reload.onclick = () => { main.innerHTML = ''; this.render(main); };
-    bar.append(weight, bulk, reload);
+    bar.append(scan, weight, bulk, reload);
 
     const kp = el('div');
     main.appendChild(kp);
@@ -484,6 +486,111 @@ const Lessons = {
         toast('Đã phân bổ: ' + (typeof r === 'object' ? JSON.stringify(r) : 'xong'));
       },
     });
+  },
+
+  /** Quét tài liệu → chọn từ mới → điền nghĩa / cấp → lưu (định dạng chuẩn). */
+  scanModal() {
+    const body = el('div', 'kscan');
+    body.innerHTML = `<div class="muted small">PDF có chữ, PDF scan / ảnh (cần tesseract trên máy), hoặc .txt. Từ đã có trong bảng vocabulary được đánh dấu.
+      Phiên âm / từ loại / câu ví dụ tra tự động; <b>nghĩa tiếng Việt và cấp CEFR do bạn điền</b>.</div>
+      <div class="kscan__src"><input type="file" class="s-file" accept=".pdf,.png,.jpg,.jpeg,.webp,.txt,.csv">
+      <input class="ainput s-pages" placeholder="trang: 3-7 (trống = cả file)" style="width:12rem">
+      <button class="go s-go">Quét</button></div><div class="s-out"></div>`;
+    const out = body.querySelector('.s-out');
+    let rows = [];
+    const m = modal({ title: 'Quét tài liệu lấy từ vựng', body, wide: '78rem', okLabel: 'Lưu các từ đã chọn',
+      onOk: async () => {
+        const pick = rows.filter(r => r.on);
+        if (!pick.length) throw new Error('Chưa chọn từ nào');
+        const bad = pick.filter(r => !r.meaning.trim() || !CEFR.includes(r.level));
+        if (bad.length) throw new Error(`${bad.length} từ thiếu nghĩa hoặc cấp: ${bad.slice(0, 5).map(r => r.word).join(', ')}…`);
+        const dup = pick.filter(r => r.existing.includes(r.level));
+        if (dup.length) throw new Error(`Đã có sẵn cùng cấp: ${dup.slice(0, 5).map(r => r.word + ' ' + r.level).join(', ')}`);
+        if (!(await Kit.ensureWrite())) throw new Error('Cần bật "Cho phép ghi"');
+        const res = await api('/api/admin/tables/vocabulary/bulk', { method: 'POST', body: JSON.stringify({ autoId: true, rows: pick.map(r => ({
+          word: r.word, level: r.level, baseWeight: 50, meaning: { vi: r.meaning.trim() },
+          phonetic: r.phonetic ? { en_us: r.phonetic } : null, partOfSpeech: r.pos ? [r.pos] : null,
+          example: r.example ? [{ sentence: r.example, sentence_vi: '' }] : [],
+        })) }) });
+        toast(`Đã thêm ${res.rows.length} từ vựng`);
+      } });
+    const draw = () => {
+      out.innerHTML = '';
+      const bar = el('div', 'btns');
+      const all = el('button', 'ghost', 'Chọn mọi từ mới');
+      all.onclick = () => { rows.forEach(r => { r.on = !r.existing.length; }); draw(); };
+      const none = el('button', 'ghost', 'Bỏ chọn');
+      none.onclick = () => { rows.forEach(r => { r.on = false; }); draw(); };
+      const lv = el('select', 'ainput');
+      lv.innerHTML = '<option value="">đặt cấp cho từ đã chọn…</option>' + CEFR.map(c => `<option>${c}</option>`).join('');
+      lv.onchange = () => { rows.filter(r => r.on).forEach(r => { r.level = lv.value; }); draw(); };
+      const look = el('button', '', '🔎  Tra phiên âm / ví dụ (từ đã chọn, tối đa 40)');
+      look.onclick = async () => {
+        const pick = rows.filter(r => r.on).slice(0, 40);
+        if (!pick.length) { toast('Chọn từ trước'); return; }
+        look.disabled = true;
+        try {
+          const r = await api('/api/admin/ocr/lookup', { method: 'POST', body: JSON.stringify({ words: pick.map(x => x.word) }) });
+          let n = 0;
+          for (const x of pick) {
+            const d = r.results[x.word];
+            if (!d) continue;
+            n++;
+            x.phonetic = x.phonetic || d.phonetic || '';
+            x.pos = x.pos || d.pos || '';
+            x.example = x.example || d.example || '';
+          }
+          toast(`Tra được ${n}/${pick.length} từ`);
+          draw();
+        } catch (e) { toast(e.message, 'err'); } finally { look.disabled = false; }
+      };
+      bar.append(all, none, lv, look, el('span', 'muted small', `${rows.filter(r => r.on).length} / ${rows.length} từ đang chọn`));
+      out.appendChild(bar);
+      const t = el('table', 'dgrid');
+      t.innerHTML = '<thead><tr><th></th><th>Từ</th><th>Lần</th><th>Đã có</th><th>Cấp</th><th>Nghĩa tiếng Việt *</th><th>Phiên âm</th><th>Từ loại</th><th>Câu ví dụ</th></tr></thead>';
+      const tb = el('tbody');
+      for (const r of rows) {
+        const tr = el('tr');
+        if (r.existing.length) tr.classList.add('dup');
+        const cell = (n) => { const td = el('td'); td.appendChild(n); tr.appendChild(td); return td; };
+        const cb = el('input'); cb.type = 'checkbox'; cb.checked = r.on; cb.onchange = () => { r.on = cb.checked; };
+        cell(cb);
+        tr.appendChild(el('td', null, r.word));
+        tr.appendChild(el('td', null, String(r.count)));
+        tr.appendChild(el('td', r.existing.length ? 'err' : 'muted', r.existing.join(', ') || '—'));
+        const lvl = el('select', 'ainput'); lvl.innerHTML = CEFR.map(c => `<option>${c}</option>`).join(''); lvl.value = r.level; lvl.onchange = () => { r.level = lvl.value; };
+        cell(lvl);
+        for (const k of ['meaning', 'phonetic', 'pos', 'example']) {
+          const i = el('input', 'ainput'); i.value = r[k]; i.oninput = () => { r[k] = i.value; };
+          if (k === 'meaning') i.placeholder = 'nghĩa…';
+          cell(i);
+        }
+        tb.appendChild(tr);
+      }
+      t.appendChild(tb);
+      const wrap = el('div', 'dgrid-wrap');
+      wrap.appendChild(t);
+      out.appendChild(wrap);
+    };
+    body.querySelector('.s-go').onclick = async () => {
+      const f = body.querySelector('.s-file').files[0];
+      if (!f) { toast('Chọn file trước', 'err'); return; }
+      if (f.size > 15 * 1024 * 1024) { toast('File quá 15 MB', 'err'); return; }
+      out.innerHTML = '<div class="aempty">Đang quét…</div>';
+      try {
+        const data = await new Promise((res, rej) => {
+          const fr = new FileReader();
+          fr.onload = () => res(String(fr.result).split(',')[1]);
+          fr.onerror = () => rej(new Error('Không đọc được file'));
+          fr.readAsDataURL(f);
+        });
+        const r = await api('/api/admin/ocr/extract', { method: 'POST', body: JSON.stringify({ name: f.name, data, pages: body.querySelector('.s-pages').value.trim() || null }) });
+        rows = r.words.map(w => ({ ...w, on: !w.existing.length, level: 'a1', meaning: '', phonetic: '', pos: '', example: '' }));
+        toast(`${r.method}: ${fmtNum(r.chars)} ký tự → ${rows.length} từ${r.truncated ? ' (chỉ lấy 400 từ hay gặp nhất)' : ''}`);
+        draw();
+      } catch (e) { out.innerHTML = ''; out.appendChild(el('div', 'aempty err', e.message)); }
+    };
+    return m;
   },
 
   bulkModal() {
