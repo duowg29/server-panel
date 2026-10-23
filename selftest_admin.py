@@ -67,6 +67,17 @@ class FakeSupabase:
                 "pk": ["id"],
             },
             "stats_view": {"cols": {"n": ("integer", "bigint", {})}, "view": True},
+            "unit": {
+                "cols": {"id": ("integer", "bigint", {}), "topicId": ("integer", "bigint", {}),
+                         "deletedAt": ("string", "timestamp with time zone", {})},
+                "pk": ["id"],
+            },
+            "unit_content": {
+                "cols": {"id": ("integer", "bigint", {}), "unitId": ("integer", "bigint", {}),
+                         "contentType": ("string", "text", {}), "contentRefId": ("integer", "bigint", {}),
+                         "deletedAt": ("string", "timestamp with time zone", {})},
+                "pk": ["id"],
+            },
         }
         self.rows: dict[str, list[dict[str, Any]]] = {
             "topic": [
@@ -76,6 +87,12 @@ class FakeSupabase:
             ],
             "learning_path": [{"id": 1, "title": "Path 1"}, {"id": 2, "title": "Path 2"}],
             "stats_view": [{"n": 1}],
+            "unit": [{"id": 100 + i, "topicId": 3 if i < 2 else 4, "deletedAt": None} for i in range(3)],
+            "unit_content": [
+                {"id": 1, "unitId": 100, "contentType": "vocabulary", "contentRefId": 9, "deletedAt": None},
+                {"id": 2, "unitId": 101, "contentType": "game", "contentRefId": 9, "deletedAt": None},
+                {"id": 3, "unitId": 102, "contentType": "vocabulary", "contentRefId": 9, "deletedAt": None},
+            ],
         }
         self.rpcs = ["tt_admin_lesson_snapshot", "tt_admin_topic_create"]
         self.calls: list[tuple[str, str, Any]] = []
@@ -88,7 +105,9 @@ class FakeSupabase:
             neg = True
             op, _, val = val.partition(".")
         v = row.get(col)
-        if op == "is":
+        if op == "in":
+            ok = str(v) in val.strip("()").split(",")
+        elif op == "is":
             ok = (v is None) if val == "null" else (v is (val == "true"))
         elif op == "eq":
             ok = str(v) == val
@@ -157,8 +176,11 @@ class FakeSupabase:
                 headers = {"Content-Range": f"{offset}-{offset + len(page) - 1}/{total}"}
                 return JSONResponse(page, headers=headers)
             if request.method == "POST":
-                rows.append(body)
-                return JSONResponse([body], 201)
+                new = body if isinstance(body, list) else [body]
+                if any(r.get("id") is not None and any(x.get("id") == r["id"] for x in rows) for r in new):
+                    return JSONResponse({"code": "23505", "message": "duplicate key value violates unique constraint"}, 409)
+                rows.extend(new)
+                return JSONResponse(new, 201)
             if request.method == "PATCH":
                 for r in sel:
                     r.update(body)
@@ -206,7 +228,7 @@ async def main() -> int:
 
     print("== trạng thái")
     st = (await c.get("/api/admin/status")).json()
-    check(st["ok"] and st["tables"] == 3, "kết nối + đếm bảng")
+    check(st["ok"] and st["tables"] == len(fake.tables), "kết nối + đếm bảng")
     check("tt_admin_user_account_snapshot" in st["rpcs_missing"] and "tt_admin_topic_create" not in st["rpcs_missing"],
           "báo đúng hàm admin còn thiếu")
 
@@ -264,6 +286,26 @@ async def main() -> int:
     check(r.status_code == 200 and r.json()["echo"] == {"p_title": "x"}, "hàm ghi khi đang cho ghi")
     r = await c.post("/api/admin/rpc/tt_admin_user_account_delete", json={})
     check(r.status_code == 404 and "Could not find" in r.json()["detail"], "lỗi Supabase hiện nguyên văn")
+
+    print("== thêm nhiều dòng / id tự tăng / lọc in")
+    r = await c.post("/api/admin/tables/topic/rows", json={"row": {"title": "Tự id"}, "autoId": True})
+    check(r.status_code == 200 and r.json()["row"]["id"] == 100, "autoId = MAX(id)+1")
+    r = await c.post("/api/admin/tables/topic/bulk", json={"rows": [{"title": "A"}, {"title": "B", "learningPathId": 2}], "autoId": True})
+    got = r.json()["rows"] if r.status_code == 200 else []
+    check([x["id"] for x in got] == [101, 102] and got[0]["learningPathId"] is None, "nhập hàng loạt, cùng tập cột")
+    r = await c.get("/api/admin/tables/topic/rows", params={"f": "id|in|3,5,99"})
+    check(sorted(x["id"] for x in r.json()["rows"]) == [3, 5, 99], "lọc in")
+    check((await c.get("/api/admin/tables/topic/rows", params={"f": "id|in|1)or(2"})).status_code == 400, "chặn giá trị in lạ")
+
+    print("== xoá mềm theo chuỗi")
+    r = await c.post("/api/admin/cms/delete", json={"entity": "topic", "id": 3})
+    d = r.json().get("deleted", {})
+    check(d == {"topic": 1, "unit": 2, "unit_content": 2}, f"topic → unit → nội dung ({d})")
+    check(fake.rows["unit"][2]["deletedAt"] is None and fake.rows["unit_content"][2]["deletedAt"] is None, "không đụng nhánh khác")
+    r = await c.post("/api/admin/cms/delete", json={"entity": "topic", "id": 3})
+    check(r.status_code == 404, "xoá lại cái đã xoá → 404")
+    r = await c.post("/api/admin/cms/delete", json={"entity": "profile", "id": 1})
+    check(r.status_code == 400, "chỉ xoá chuỗi cho nội dung học")
 
     print("== nhật ký")
     log = (await c.get("/api/admin/audit")).json()

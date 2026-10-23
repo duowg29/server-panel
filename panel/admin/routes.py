@@ -30,7 +30,8 @@ GUARD = WriteGuard()
 AUDIT = AuditLog(_DATA / "admin_audit.db")
 
 #: phép lọc cho phép (PostgREST)
-OPS = {"eq", "neq", "gt", "gte", "lt", "lte", "ilike", "like", "is"}
+OPS = {"eq", "neq", "gt", "gte", "lt", "lte", "ilike", "like", "is", "in"}
+_IN_ITEM_RE = re.compile(r"^[A-Za-z0-9_.@:+-]{1,80}$")
 _IDENT_RE = re.compile(r"^[A-Za-z_][A-Za-z0-9_]{0,62}$")
 MAX_LIMIT = 500
 
@@ -201,6 +202,11 @@ async def rows(
             raise HTTPException(400, f"Phép lọc không hỗ trợ: {op}")
         if op == "is" and val not in ("null", "true", "false"):
             raise HTTPException(400, "Phép 'is' chỉ nhận null / true / false")
+        if op == "in":
+            items = [x.strip() for x in val.split(",") if x.strip()]
+            if not items or len(items) > 500 or not all(_IN_ITEM_RE.match(x) for x in items):
+                raise HTTPException(400, "Phép 'in' nhận danh sách giá trị đơn giản, cách nhau dấu phẩy (tối đa 500)")
+            val = "(" + ",".join(items) + ")"
         params.append((col, f"{op}.{val}"))
     if q and q.strip():
         needle = q.strip()
@@ -235,6 +241,8 @@ async def insert(name: str, body: dict[str, Any]) -> dict[str, Any]:
         raise HTTPException(400, "Thiếu dữ liệu dòng mới")
     _check_cols(t, list(row))
     sb = await POOL.get(_settings())
+    if body.get("autoId"):
+        await _assign_ids(sb, t, [row])
     try:
         data, _ = await sb.rest("POST", name, body=row, prefer="return=representation")
     except SupaError as e:
@@ -243,6 +251,46 @@ async def insert(name: str, body: dict[str, Any]) -> dict[str, Any]:
     created = (data or [None])[0]
     _audit("insert", name, {"row": row, "after": created}, True)
     return {"row": created}
+
+
+async def _assign_ids(sb, t: dict[str, Any], rows: list[dict[str, Any]]) -> None:
+    """Gán id = MAX(id)+1, +2… cho dòng chưa có id. Sequence của nhiều bảng trên
+    Supabase lệch sau các lần nhập tay (các hàm tt_admin_* cũng phải reset nó),
+    nên không trông vào giá trị mặc định."""
+    if t["pk"] != ["id"]:
+        raise HTTPException(400, "autoId chỉ dùng cho bảng có khoá chính 'id'")
+    data, _ = await sb.rest("GET", t["name"], [("select", "id"), ("order", "id.desc.nullslast"), ("limit", "1")])
+    nxt = int((data or [{}])[0].get("id") or 0) + 1
+    for r in rows:
+        if r.get("id") is None:
+            r["id"] = nxt
+            nxt += 1
+
+
+@router.post("/tables/{name}/bulk")
+async def bulk_insert(name: str, body: dict[str, Any]) -> dict[str, Any]:
+    """Thêm nhiều dòng một lần (nhập hàng loạt). Một lệnh POST — lỗi là không dòng nào vào."""
+    _require_write()
+    t = await _table(name, write=True)
+    rows = body.get("rows") or []
+    if not isinstance(rows, list) or not rows or not all(isinstance(r, dict) and r for r in rows):
+        raise HTTPException(400, "Thiếu danh sách dòng")
+    if len(rows) > 1000:
+        raise HTTPException(400, "Tối đa 1000 dòng mỗi lần")
+    cols = sorted({k for r in rows for k in r})
+    _check_cols(t, cols)
+    sb = await POOL.get(_settings())
+    if body.get("autoId"):
+        await _assign_ids(sb, t, rows)
+    # PostgREST cần mọi dòng cùng tập cột
+    rows = [{c: r.get(c) for c in sorted({k for x in rows for k in x})} for r in rows]
+    try:
+        data, _ = await sb.rest("POST", name, body=rows, prefer="return=representation")
+    except SupaError as e:
+        _audit("insert", name, {"bulk": len(rows), "rows": rows[:50]}, False, e.message)
+        raise _http(e) from e
+    _audit("insert", name, {"bulk": len(rows), "ids": [r.get("id") for r in (data or [])][:1000]}, True)
+    return {"rows": data or []}
 
 
 async def _one(sb, name: str, pkp: list[tuple[str, str]]) -> dict[str, Any] | None:
@@ -343,3 +391,57 @@ async def rpc(fn: str, request: Request) -> Any:
         preview = result if len(str(result)) < 4000 else str(result)[:4000] + "…"
         _audit("rpc", fn, {"params": params, "result": preview}, True)
     return result
+
+
+# ── nội dung học: xoá mềm theo chuỗi ────────────────────────────────────
+#: (bảng con, cột trỏ lên cha) — learning_path → topic → unit → unit_content
+_CMS_CHILD = {
+    "learning_path": ("topic", "learningPathId"),
+    "topic": ("unit", "topicId"),
+    "unit": ("unit_content", "unitId"),
+}
+#: loại nội dung có thể gắn vào unit (unit_content.contentType)
+_CMS_CONTENT = {"vocabulary": "vocabulary", "grammar": "grammar", "game": "game"}
+
+
+@router.post("/cms/delete")
+async def cms_delete(body: dict[str, Any]) -> dict[str, Any]:
+    """Xoá mềm như tinytalk-admin: lộ trình → topic → unit → nội dung unit;
+    xoá từ vựng / ngữ pháp / game thì gỡ luôn các liên kết unit_content tới nó."""
+    _require_write()
+    entity = str(body.get("entity") or "")
+    try:
+        root = int(body.get("id"))
+    except (TypeError, ValueError) as e:
+        raise HTTPException(400, "Thiếu id") from e
+    if entity not in _CMS_CHILD and entity not in _CMS_CONTENT and entity != "unit_content":
+        raise HTTPException(400, f"Không xoá theo chuỗi được loại '{entity}'")
+    sb = await POOL.get(_settings())
+    now = dt.datetime.now(dt.timezone.utc).isoformat()
+    done: dict[str, list[int]] = {}
+
+    async def soft(table: str, filters: list[tuple[str, str]]) -> list[int]:
+        data, _ = await sb.rest(
+            "PATCH", table, [*filters, ("deletedAt", "is.null")],
+            body={"deletedAt": now}, prefer="return=representation",
+        )
+        ids = [int(r["id"]) for r in (data or []) if r.get("id") is not None]
+        done.setdefault(table, []).extend(ids)
+        return ids
+
+    try:
+        ids = await soft(entity, [("id", f"eq.{root}")])
+        if not ids:
+            raise HTTPException(404, "Không tìm thấy (hoặc đã xoá)")
+        table = entity
+        while table in _CMS_CHILD and ids:
+            child, col = _CMS_CHILD[table]
+            ids = await soft(child, [(col, f"in.({','.join(map(str, ids))})")])
+            table = child
+        if entity in _CMS_CONTENT:
+            await soft("unit_content", [("contentType", f"eq.{_CMS_CONTENT[entity]}"), ("contentRefId", f"eq.{root}")])
+    except SupaError as e:
+        _audit("delete", entity, {"id": root, "cascade": done}, False, e.message)
+        raise _http(e) from e
+    _audit("delete", entity, {"id": root, "soft": True, "cascade": done}, True)
+    return {"ok": True, "deleted": {k: len(v) for k, v in done.items()}}

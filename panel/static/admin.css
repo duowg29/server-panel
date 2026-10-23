@@ -303,3 +303,25 @@ h4.ksub { margin-top: 1rem; }
 .req { color: var(--red); }
 .modal .tabs { flex-wrap: wrap; }
 .kpi__v { overflow-wrap: anywhere; }
+
+/* ── Nội dung học: cây 3 cột + nội dung unit ─────────────────────── */
+.ktree { display: grid; grid-template-columns: repeat(3, minmax(0, 1fr)); gap: .6rem; margin-bottom: 1rem; }
+.ktree__col { background: var(--bg-panel); border: 1px solid var(--line); border-radius: var(--r); display: flex; flex-direction: column; min-height: 14rem; }
+.ktree__h { display: flex; align-items: center; gap: .5rem; padding: .45rem .6rem; border-bottom: 1px solid var(--line); }
+.ktree__h b { font-size: 12px; letter-spacing: .12em; text-transform: uppercase; color: var(--fg-dim); }
+.ktree__h .muted { margin-right: auto; font-size: 12px; }
+.ktree__h button { min-height: 24px; padding: 0 .5rem; }
+.ktree__list { overflow: auto; max-height: 24rem; padding: .3rem; }
+.ktree__it { display: flex; align-items: center; gap: .4rem; padding: .28rem .45rem; border-radius: var(--r-sm); cursor: pointer; font-size: 12.5px; }
+.ktree__it .t { overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
+.ktree__it .s { margin-left: auto; font-size: 11px; white-space: nowrap; }
+.ktree__it:hover { background: var(--bg-raise); }
+.ktree__it.on { background: var(--cyan-dim); color: var(--cyan); }
+.ktree__tools { display: none; gap: 2px; }
+.ktree__it:hover .ktree__tools { display: inline-flex; }
+.ktree__tools button { min-height: 22px; padding: 0 .3rem; }
+.kpick { max-height: 16rem; overflow: auto; border: 1px solid var(--line); border-radius: var(--r-sm); margin-top: .4rem; }
+.kpick__it { padding: .3rem .55rem; cursor: pointer; font-size: 12.5px; border-bottom: 1px solid var(--line); }
+.kpick__it:hover { background: var(--bg-raise); }
+.kpick__it.on { background: var(--cyan-dim); color: var(--cyan); }
+@media (max-width: 1000px) { .ktree { grid-template-columns: 1fr; } }

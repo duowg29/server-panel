@@ -132,6 +132,82 @@ const Kit = {
     };
   },
 
+  /** Bảng đọc thẳng từ một bảng Supabase, phân trang / tìm / sắp xếp ở server
+   *  (cho bảng lớn). query() trả thêm tham số: {f: ['col|op|val'], deleted, q}. */
+  serverTable(parent, { table, columns, pageSize = 25, order = 'id', desc = true, query, onRow, toolbar, empty = 'Không có dòng nào.' }) {
+    const wrap = el('div', 'ktable');
+    const bar = el('div', 'ktable__bar');
+    const q = el('input', 'ainput');
+    q.type = 'search';
+    q.placeholder = '⌕  tìm…';
+    q.style.flex = '1';
+    bar.appendChild(q);
+    if (toolbar) for (const n of toolbar) bar.appendChild(n);
+    const grid = el('div', 'dgrid-wrap');
+    const pager = el('div', 'tables__pager');
+    wrap.append(bar, grid, pager);
+    parent.appendChild(wrap);
+    const st = { offset: 0, size: pageSize, order, desc, total: null, rows: [] };
+    let timer;
+    q.oninput = () => { clearTimeout(timer); timer = setTimeout(() => { st.offset = 0; load(); }, 350); };
+    const load = async () => {
+      const p = new URLSearchParams({ limit: st.size, offset: st.offset, order: st.order });
+      if (st.desc) p.set('desc', '1');
+      if (q.value.trim()) p.set('q', q.value.trim());
+      const extra = query ? query() : {};
+      for (const f of extra.f || []) p.append('f', f);
+      if (extra.deleted) p.set('deleted', extra.deleted);
+      grid.classList.add('loading');
+      try {
+        const r = await api(`/api/admin/tables/${table}/rows?${p}`);
+        st.rows = r.rows;
+        st.total = r.total;
+        draw();
+      } catch (e) {
+        grid.innerHTML = '';
+        grid.appendChild(el('div', 'aempty err', e.message));
+      } finally { grid.classList.remove('loading'); }
+    };
+    const draw = () => {
+      const t = el('table', 'dgrid');
+      const hr = el('tr');
+      for (const c of columns) {
+        const th = el('th', null, c.label + (st.order === c.key ? (st.desc ? ' ▼' : ' ▲') : ''));
+        if (c.sort === false) th.style.cursor = 'default';
+        else th.onclick = () => { if (st.order === c.key) st.desc = !st.desc; else { st.order = c.key; st.desc = false; } st.offset = 0; load(); };
+        hr.appendChild(th);
+      }
+      const thd = el('thead'); thd.appendChild(hr); t.appendChild(thd);
+      const tb = el('tbody');
+      for (const r of st.rows) {
+        const tr = el('tr');
+        for (const c of columns) {
+          const td = el('td');
+          const out = c.render ? c.render(r) : Kit.text(r[c.key]);
+          if (out instanceof Node) td.appendChild(out); else td.textContent = out;
+          tr.appendChild(td);
+        }
+        if (onRow) tr.onclick = (e) => { if (!e.target.closest('button,a,select,input')) onRow(r); };
+        tb.appendChild(tr);
+      }
+      t.appendChild(tb);
+      grid.innerHTML = '';
+      grid.appendChild(st.rows.length ? t : el('div', 'aempty', empty));
+      pager.innerHTML = '';
+      const to = st.offset + st.rows.length;
+      pager.appendChild(el('span', 'muted', `${fmtNum(st.rows.length ? st.offset + 1 : 0)}–${fmtNum(to)} / ${st.total == null ? '?' : fmtNum(st.total)}`));
+      const prev = el('button', '', '‹');
+      prev.disabled = st.offset === 0;
+      prev.onclick = () => { st.offset = Math.max(0, st.offset - st.size); load(); };
+      const next = el('button', '', '›');
+      next.disabled = st.total != null ? to >= st.total : st.rows.length < st.size;
+      next.onclick = () => { st.offset += st.size; load(); };
+      pager.append(prev, next);
+    };
+    load();
+    return { reload: load, get total() { return st.total; } };
+  },
+
   csv(name, columns, rows, val) {
     const cell = x => {
       const s = x == null ? '' : typeof x === 'object' ? JSON.stringify(x) : String(x);
@@ -172,7 +248,7 @@ const Kit = {
     const node = el('div', 'kform');
     const inputs = {};
     for (const f of fields) {
-      const box = el('div', 'kform__f' + (f.full || f.type === 'textarea' || f.type === 'json' ? ' full' : ''));
+      const box = el('div', 'kform__f' + (f.full || f.type === 'textarea' || f.type === 'json' || f.type === 'lines' ? ' full' : ''));
       const lab = el('label');
       lab.innerHTML = esc(f.label) + (f.required ? ' <span class="req">*</span>' : '');
       box.appendChild(lab);
@@ -193,10 +269,11 @@ const Kit = {
           inp.appendChild(n);
         }
         inp.value = v == null ? '' : String(v);
-      } else if (f.type === 'textarea' || f.type === 'json') {
+      } else if (f.type === 'textarea' || f.type === 'json' || f.type === 'lines') {
         inp = el('textarea');
         inp.rows = f.rows || 4;
-        inp.value = v == null ? '' : (f.type === 'json' && typeof v === 'object' ? JSON.stringify(v, null, 2) : String(v));
+        if (f.type === 'lines') inp.value = Array.isArray(v) ? v.join('\n') : (v == null ? '' : String(v));
+        else inp.value = v == null ? '' : (f.type === 'json' && typeof v === 'object' ? JSON.stringify(v, null, 2) : String(v));
       } else {
         inp = el('input');
         inp.type = { password: 'password', email: 'email', number: 'number', int: 'number', date: 'date', datetime: 'datetime-local' }[f.type] || 'text';
@@ -228,6 +305,7 @@ const Kit = {
         else if (f.type === 'int') { if (!/^-?\d+$/.test(s)) throw new Error(`"${f.label}" phải là số nguyên`); v = Number(s); }
         else if (f.type === 'bool') v = s === 'true';
         else if (f.type === 'json') { try { v = JSON.parse(s); } catch { throw new Error(`"${f.label}" không phải JSON hợp lệ`); } }
+        else if (f.type === 'lines') v = s.split('\n').map(x => x.trim()).filter(Boolean);
         else if (f.type === 'datetime') v = new Date(s).toISOString();
         else v = f.type === 'password' ? raw : s;
         if (v != null && f.min != null && typeof v === 'number' && v < f.min) throw new Error(`"${f.label}" tối thiểu ${f.min}`);
