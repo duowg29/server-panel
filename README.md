@@ -9,6 +9,11 @@ Chạy trên `http://127.0.0.1:9199`.
 
 Thêm server mới = sửa [`services.yaml`](services.yaml) rồi bấm **Reload config**. Không phải sửa code.
 
+Nút **⚙ Admin** mở trang quản trị dữ liệu TinyTalk trên Supabase (`/admin`, thay cho
+`tinytalk-admin`). Cần file `.env.admin` — chép từ [`.env.admin.example`](.env.admin.example),
+điền `SUPABASE_URL` + `SUPABASE_SERVICE_ROLE_KEY`. Khoá chỉ nằm ở backend; mở trang là **chỉ
+xem**, bật "Cho phép ghi" mới sửa được, mọi thay đổi vào `data/admin_audit.db`.
+
 ---
 
 ## Cài đặt

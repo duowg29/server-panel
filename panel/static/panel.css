@@ -287,6 +287,7 @@ a:hover { text-decoration: underline; }
 .btns { display: flex; gap: .4rem; flex-wrap: wrap; align-items: center; }
 .btns.more { padding-top: .5rem; border-top: 1px dashed var(--line); }
 
+a.btn { text-decoration: none; }
 button, .btn {
   display: inline-flex;
   align-items: center;

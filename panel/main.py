@@ -26,6 +26,7 @@ from fastapi.responses import FileResponse, JSONResponse
 from fastapi.staticfiles import StaticFiles
 
 from . import config as cfgmod
+from .admin.routes import router as admin_router
 from .archive import SeriesArchive
 from .config import Config, ConfigError, mask_env
 from .health import HealthPoller
@@ -379,6 +380,15 @@ async def index() -> FileResponse:
 @app.get("/popout")
 async def popout() -> FileResponse:
     return FileResponse(STATIC / "popout.html")
+
+
+@app.get("/admin")
+async def admin_page() -> FileResponse:
+    """Trang Admin — quản lý dữ liệu TinyTalk trên Supabase (panel/admin/)."""
+    return FileResponse(STATIC / "admin.html")
+
+
+app.include_router(admin_router)
 
 
 app.mount("/static", StaticFiles(directory=str(STATIC)), name="static")

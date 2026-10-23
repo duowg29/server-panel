@@ -20,6 +20,9 @@ fi
 if [[ "${1:-}" == "--check" ]]; then
   cd "$HERE"
   .venv/bin/python selftest.py || exit 1
+  echo
+  echo "== admin =="
+  .venv/bin/python selftest_admin.py || exit 1
   # Frontend: chỉ cần node trần, không dependency. Máy không có node thì bỏ qua
   # — panel vẫn chạy được, chỉ là không kiểm được phần render.
   if command -v node >/dev/null 2>&1; then

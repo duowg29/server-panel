@@ -5,3 +5,6 @@ __pycache__/
 .config-backups/
 run/
 data/
+
+# Khoá Supabase của trang Admin — không lên git.
+.env.admin

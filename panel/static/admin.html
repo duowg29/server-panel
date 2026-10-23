@@ -1,0 +1,44 @@
+<!doctype html>
+<html lang="vi">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<title>TinyTalk // Admin</title>
+<link rel="stylesheet" href="/static/panel.css">
+<link rel="stylesheet" href="/static/admin.css">
+<link rel="icon" href="data:image/svg+xml,<svg xmlns='http://www.w3.org/2000/svg' viewBox='0 0 16 16'><text y='13' font-size='13'>⚙</text></svg>">
+</head>
+<body class="admin">
+
+<div class="topbar">
+  <span class="brand">■ TINYTALK</span>
+  <span class="sep">/</span>
+  <span>quản trị dữ liệu</span>
+  <span class="spacer"></span>
+  <span id="conn">○ đang kết nối Supabase…</span>
+</div>
+
+<div class="masthead">
+  <h1>ADMIN<em>_</em>PANEL</h1>
+  <span class="tag" id="admin-tag">Dữ liệu thật trên Supabase · khoá service_role chỉ nằm ở backend · đừng mở ra mạng</span>
+  <div class="actions">
+    <a class="btn" href="/" id="btn-back">←  Server panel</a>
+    <button id="btn-write" title="Mặc định chỉ xem. Bật để sửa dữ liệu — tự tắt sau một lúc.">🔒  Chỉ xem</button>
+    <button id="btn-refresh">↻  Tải lại</button>
+  </div>
+</div>
+
+<div class="statusstrip" id="strip"></div>
+
+<main class="admin-shell">
+  <nav class="anav" id="anav"></nav>
+  <section class="amain" id="amain"></section>
+</main>
+
+<div id="toasts"></div>
+
+<script src="/static/admin_core.js"></script>
+<script src="/static/admin_tables.js"></script>
+<script src="/static/admin_home.js"></script>
+</body>
+</html>

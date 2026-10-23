@@ -1,0 +1,60 @@
+"""Các hàm `tt_admin_*` (đặt trong Supabase bởi tinytalk-admin/supabase/rpc-migrations)
+mà trang admin dùng. Gọi lại đúng các hàm này để giữ nguyên quy tắc nghiệp vụ
+(xoá mềm, kiểm tra trùng, xoá theo chuỗi…) thay vì viết lại.
+
+Hàm ĐỌC: đuôi _snapshot / _get / _stats. Còn lại là hàm GHI — bị chặn khi công
+tắc ghi tắt, và vào nhật ký.
+"""
+
+from __future__ import annotations
+
+import re
+
+PREFIX = "tt_admin_"
+_READ_RE = re.compile(r"_(snapshot|get|stats)$")
+
+#: Mọi hàm tinytalk-admin gọi (99) — dùng để báo hàm nào còn thiếu trên Supabase.
+KNOWN = sorted("""
+tt_admin_achievement_category_create tt_admin_achievement_category_delete
+tt_admin_achievement_category_map_delete tt_admin_achievement_category_map_upsert
+tt_admin_achievement_category_set_active tt_admin_achievement_category_update
+tt_admin_achievement_create tt_admin_achievement_delete tt_admin_achievement_event_map_delete
+tt_admin_achievement_event_map_upsert tt_admin_achievement_level_create tt_admin_achievement_level_delete
+tt_admin_achievement_level_update tt_admin_achievement_reward_delete tt_admin_achievement_reward_upsert
+tt_admin_achievement_set_active tt_admin_achievement_snapshot tt_admin_achievement_update
+tt_admin_app_feature_create tt_admin_app_feature_delete tt_admin_app_feature_update
+tt_admin_game_create tt_admin_game_delete tt_admin_game_reward_create tt_admin_game_reward_delete
+tt_admin_game_reward_map_delete tt_admin_game_reward_map_upsert tt_admin_game_sessions_get
+tt_admin_game_set_playable tt_admin_game_set_premium tt_admin_game_snapshot tt_admin_game_update
+tt_admin_leaderboard_create tt_admin_leaderboard_delete tt_admin_leaderboard_snapshot
+tt_admin_leaderboard_update tt_admin_lesson_bulk_import tt_admin_lesson_effective_stats
+tt_admin_lesson_entity_delete tt_admin_lesson_entity_update tt_admin_lesson_form_create
+tt_admin_lesson_snapshot tt_admin_notification_create tt_admin_notification_delete
+tt_admin_notification_snapshot tt_admin_notification_template_create tt_admin_notification_template_delete
+tt_admin_notification_template_set_active tt_admin_notification_template_update
+tt_admin_plan_feature_access_delete tt_admin_plan_feature_access_upsert tt_admin_profile_coin_ledger_get
+tt_admin_profile_experience_get tt_admin_profile_items_get tt_admin_profile_notification_preference_upsert
+tt_admin_profile_online_tasks_get tt_admin_profile_progress_get tt_admin_profile_reward_log_delete
+tt_admin_profile_reward_log_get tt_admin_reward_bulk_grant tt_admin_reward_create tt_admin_reward_delete
+tt_admin_reward_snapshot tt_admin_reward_update tt_admin_subscription_plan_create
+tt_admin_subscription_plan_delete tt_admin_subscription_plan_set_active tt_admin_subscription_plan_update
+tt_admin_subscription_snapshot tt_admin_task_create tt_admin_task_delete tt_admin_task_event_map_delete
+tt_admin_task_event_map_upsert tt_admin_task_reward_delete tt_admin_task_reward_upsert
+tt_admin_task_set_active tt_admin_task_snapshot tt_admin_task_update tt_admin_topic_create
+tt_admin_topic_delete tt_admin_topic_update tt_admin_unit_content_create tt_admin_unit_content_delete
+tt_admin_unit_content_reorder tt_admin_unit_content_update tt_admin_unit_create tt_admin_unit_delete
+tt_admin_unit_update tt_admin_user_account_create tt_admin_user_account_delete
+tt_admin_user_account_grant_coin tt_admin_user_account_grant_exp tt_admin_user_account_grant_item
+tt_admin_user_account_reset_progress tt_admin_user_account_set_status tt_admin_user_account_snapshot
+tt_admin_user_account_update tt_admin_user_analytics_snapshot tt_admin_vocabulary_weight_distribute
+""".split())
+
+_NAME_RE = re.compile(r"^tt_admin_[a-z0-9_]{1,80}$")
+
+
+def valid(name: str) -> bool:
+    return bool(_NAME_RE.match(name))
+
+
+def is_read(name: str) -> bool:
+    return bool(_READ_RE.search(name))
