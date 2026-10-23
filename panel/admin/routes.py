@@ -445,3 +445,36 @@ async def cms_delete(body: dict[str, Any]) -> dict[str, Any]:
         raise _http(e) from e
     _audit("delete", entity, {"id": root, "soft": True, "cascade": done}, True)
     return {"ok": True, "deleted": {k: len(v) for k, v in done.items()}}
+
+
+# ── TinyFarm: reset nông trại của một người chơi ─────────────────────────
+#: đúng thứ tự của hàm tiny_farm_reset_profile (migration 061) — hàm đó kiểm
+#: "chủ hồ sơ đang đăng nhập" nên không gọi được bằng khoá service. GIỮ
+#: tiny_farm_purchase (lịch sử giao dịch) và tiny_farm_support_ticket.
+_TF_RESET = [
+    "tiny_farm_quest_progress", "tiny_farm_tool_boost", "tiny_farm_character_upgrade",
+    "tiny_farm_farm_unlock", "tiny_farm_building", "tiny_farm_stock",
+    "tiny_farm_promo_redemption", "tiny_farm_profile",
+]
+
+
+@router.post("/tinyfarm/reset")
+async def tinyfarm_reset(body: dict[str, Any]) -> dict[str, Any]:
+    """Xoá sạch dữ liệu TinyFarm của một hồ sơ — lần mở game sau là người chơi
+    mới. Bản sao các dòng bị xoá nằm trong nhật ký để khôi phục được."""
+    _require_write()
+    try:
+        pid = int(body.get("profileId"))
+    except (TypeError, ValueError) as e:
+        raise HTTPException(400, "Thiếu profileId") from e
+    sb = await POOL.get(_settings())
+    removed: dict[str, list[Any]] = {}
+    try:
+        for table in _TF_RESET:
+            data, _ = await sb.rest("DELETE", table, [("profileId", f"eq.{pid}")], prefer="return=representation")
+            removed[table] = data or []
+    except SupaError as e:
+        _audit("delete", "tiny_farm_reset", {"profileId": pid, "removed": removed}, False, e.message)
+        raise _http(e) from e
+    _audit("delete", "tiny_farm_reset", {"profileId": pid, "removed": removed}, True)
+    return {"ok": True, "deleted": {k: len(v) for k, v in removed.items()}}

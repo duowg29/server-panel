@@ -67,6 +67,10 @@ class FakeSupabase:
                 "pk": ["id"],
             },
             "stats_view": {"cols": {"n": ("integer", "bigint", {})}, "view": True},
+            **{t: {"cols": {"profileId": ("integer", "bigint", {}), "n": ("integer", "bigint", {})}, "pk": ["profileId", "n"]}
+               for t in ("tiny_farm_quest_progress", "tiny_farm_tool_boost", "tiny_farm_character_upgrade",
+                         "tiny_farm_farm_unlock", "tiny_farm_building", "tiny_farm_stock", "tiny_farm_promo_redemption",
+                         "tiny_farm_profile", "tiny_farm_purchase")},
             "unit": {
                 "cols": {"id": ("integer", "bigint", {}), "topicId": ("integer", "bigint", {}),
                          "deletedAt": ("string", "timestamp with time zone", {})},
@@ -87,6 +91,10 @@ class FakeSupabase:
             ],
             "learning_path": [{"id": 1, "title": "Path 1"}, {"id": 2, "title": "Path 2"}],
             "stats_view": [{"n": 1}],
+            **{t: [{"profileId": p, "n": i} for p in (7, 8) for i in range(2)]
+               for t in ("tiny_farm_quest_progress", "tiny_farm_tool_boost", "tiny_farm_character_upgrade",
+                         "tiny_farm_farm_unlock", "tiny_farm_building", "tiny_farm_stock", "tiny_farm_promo_redemption",
+                         "tiny_farm_profile", "tiny_farm_purchase")},
             "unit": [{"id": 100 + i, "topicId": 3 if i < 2 else 4, "deletedAt": None} for i in range(3)],
             "unit_content": [
                 {"id": 1, "unitId": 100, "contentType": "vocabulary", "contentRefId": 9, "deletedAt": None},
@@ -187,6 +195,8 @@ class FakeSupabase:
                 return JSONResponse(sel)
             for r in sel:
                 rows.remove(r)
+            if "representation" in (request.headers.get("prefer") or ""):
+                return JSONResponse(sel)
             return Response(status_code=204)
 
         return app
@@ -306,6 +316,13 @@ async def main() -> int:
     check(r.status_code == 404, "xoá lại cái đã xoá → 404")
     r = await c.post("/api/admin/cms/delete", json={"entity": "profile", "id": 1})
     check(r.status_code == 400, "chỉ xoá chuỗi cho nội dung học")
+
+    print("== reset TinyFarm")
+    r = await c.post("/api/admin/tinyfarm/reset", json={"profileId": 7})
+    d = r.json().get("deleted", {})
+    check(r.status_code == 200 and d.get("tiny_farm_profile") == 2 and "tiny_farm_purchase" not in d, "xoá 8 bảng, giữ giao dịch")
+    check(all(x["profileId"] == 8 for x in fake.rows["tiny_farm_stock"]) and len(fake.rows["tiny_farm_purchase"]) == 4,
+          "chỉ đụng người chơi đó")
 
     print("== nhật ký")
     log = (await c.get("/api/admin/audit")).json()
