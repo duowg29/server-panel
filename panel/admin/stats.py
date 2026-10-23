@@ -8,10 +8,11 @@ Ngày tính theo giờ Việt Nam (UTC+7).
 from __future__ import annotations
 
 import datetime as dt
+import functools
 from collections import Counter, defaultdict
 from typing import Any
 
-from fastapi import APIRouter
+from fastapi import APIRouter, HTTPException
 
 router = APIRouter(prefix="/api/admin/stats")
 
@@ -46,7 +47,21 @@ def _day(ts: dt.datetime) -> str:
     return ts.astimezone(VN).date().isoformat()
 
 
+def _supa_errors(f):
+    """Lỗi Supabase (kể cả lỗi mạng) → HTTP rõ ràng, không thành 500 trống."""
+    @functools.wraps(f)
+    async def wrap(*a, **kw):
+        from . import routes
+        from .supa import SupaError
+        try:
+            return await f(*a, **kw)
+        except SupaError as e:
+            raise routes._http(e) from e
+    return wrap
+
+
 @router.get("/learning")
+@_supa_errors
 async def learning(days: int = 30, min_attempts: int = 3) -> dict[str, Any]:
     from . import routes  # tránh vòng import lúc nạp module
     from .supa import SupaError
@@ -63,6 +78,8 @@ async def learning(days: int = 30, min_attempts: int = 3) -> dict[str, Any]:
         stats = await _all(sb, "vocabulary_global_stats", "vocabularyId,attempts,correct,avgScore100,updatedAt")
         tb = await _all(sb, "profile_tinybot_device", "id,profileId,deviceId,connectionStatus,lastSeenAt,isPrimary",
                         [("deletedAt", "is.null")])
+        talks = await _all(sb, "on_the_go_free_talk_session", FT_SELECT,
+                           [("deletedAt", "is.null"), ("startedAt", f"gte.{since.isoformat()}")])
     except SupaError as e:
         raise routes._http(e) from e
 
@@ -91,6 +108,7 @@ async def learning(days: int = 30, min_attempts: int = 3) -> dict[str, Any]:
         g["results"][s.get("resultStatus") or "?"] += 1
         players.add(s.get("profileId"))
     last7 = {_day(now - dt.timedelta(days=i)) for i in range(7)}
+    ft_secs = [x for x in (_talk_secs(t) for t in talks) if x is not None]
 
     # ── điểm phát âm theo từng từ ─────────────────────────────────────
     words = [w for w in stats if (w.get("attempts") or 0) > 0 and w.get("avgScore100") is not None]
@@ -139,6 +157,13 @@ async def learning(days: int = 30, min_attempts: int = 3) -> dict[str, Any]:
                   "results": dict(v["results"])} for k, v in by_game.items()],
                 key=lambda x: -x["count"]),
         },
+        "freeTalk": {
+            "sessions": len(talks),
+            "players": len({t.get("profileId") for t in talks}),
+            "avgMinutes": round(sum(ft_secs) / len(ft_secs) / 60, 1) if ft_secs else None,
+            "avgTurns": round(sum(t.get("turnCount") or 0 for t in talks) / len(talks), 1) if talks else None,
+            "byActivity": dict(Counter(t.get("activity") or "free_talk" for t in talks)),
+        },
         "pronunciation": {
             "words": len(words), "attempts": att, "correct": sum(w.get("correct") or 0 for w in words),
             "avgWeighted": weighted, "avgPlain": plain, "minAttempts": min_attempts,
@@ -157,3 +182,237 @@ async def learning(days: int = 30, min_attempts: int = 3) -> dict[str, Any]:
         },
     }
 
+
+
+# ══ Theo từng học sinh ══════════════════════════════════════════════════
+# Nguồn:
+#   game_session            — phiên chơi; flashcard ghi correct/wrongVocabularyIds
+#   profile_event           — heartbeat-sent (phút online), vocabulary-learned (score100)
+#   on_the_go_free_talk_session — Free Talk / Story
+# Chỉ lấy đúng trường cần trong metadata (PostgREST `metadata->key`).
+
+GS_SELECT = ("id,profileId,gameId,startedAt,endedAt,createdAt,score,resultStatus,"
+             "cv:metadata->correctVocabularyIds,wv:metadata->wrongVocabularyIds,dps:metadata->durationPlayedSec")
+FT_SELECT = "id,profileId,startedAt,endedAt,turnCount,resultStatus,dur:metadata->durationSeconds,activity:metadata->>activity"
+MAX_SESSION_S = 3 * 3600  # phiên treo (quên đóng) không được tính thành giờ chơi
+
+
+def _secs(a: str | None, b: str | None) -> float | None:
+    t0, t1 = _parse(a), _parse(b)
+    if not t0 or not t1:
+        return None
+    d = (t1 - t0).total_seconds()
+    return d if 0 <= d <= MAX_SESSION_S else None
+
+
+def _sess_secs(s: dict[str, Any]) -> float | None:
+    """Thời gian chơi: game tự đo (TinyFarm ghi durationPlayedSec) thì tin số đó —
+    phiên hay bị đóng muộn bởi tác vụ quét timeout."""
+    d = s.get("dps")
+    if isinstance(d, (int, float)) and 0 <= d <= MAX_SESSION_S:
+        return float(d)
+    return _secs(s.get("startedAt"), s.get("endedAt"))
+
+
+def _talk_secs(t: dict[str, Any]) -> float | None:
+    d = t.get("dur")
+    if isinstance(d, (int, float)) and 0 <= d <= MAX_SESSION_S:
+        return float(d)
+    return _secs(t.get("startedAt"), t.get("endedAt"))
+
+
+def _ids(v: Any) -> list[int]:
+    return [int(x) for x in v if isinstance(x, (int, float, str)) and str(x).isdigit()] if isinstance(v, list) else []
+
+
+async def _activity(sb, since: dt.datetime, pid: int | None = None) -> dict[str, list[dict[str, Any]]]:
+    from . import routes
+    from .supa import SupaError
+
+    who = [("profileId", f"eq.{pid}")] if pid is not None else []
+    iso = since.isoformat()
+    try:
+        return {
+            "sessions": await _all(sb, "game_session", GS_SELECT,
+                                   [("deletedAt", "is.null"), ("createdAt", f"gte.{iso}"), *who], "id.asc"),
+            "beats": await _all(sb, "profile_event", "profileId,createdAt,m:metadata->minutesDelta",
+                                [("metadata->>actionSlug", "eq.heartbeat-sent"), ("createdAt", f"gte.{iso}"), *who], "id.asc"),
+            "learned": await _all(sb, "profile_event", "profileId,createdAt,vid:metadata->vocabularyId,s:metadata->score100",
+                                  [("metadata->>actionSlug", "eq.vocabulary-learned"), ("createdAt", f"gte.{iso}"), *who], "id.asc"),
+            "talks": await _all(sb, "on_the_go_free_talk_session", FT_SELECT,
+                                [("deletedAt", "is.null"), ("startedAt", f"gte.{iso}"), *who], "id.asc"),
+            "games": await _all(sb, "game", "id,title"),
+        }
+    except SupaError as e:
+        raise routes._http(e) from e
+
+
+def _summary(act: dict[str, list[dict[str, Any]]]) -> dict[Any, dict[str, Any]]:
+    """Gộp hoạt động theo profileId."""
+    title = {g["id"]: g.get("title") or f"#{g['id']}" for g in act["games"]}
+    out: dict[Any, dict[str, Any]] = defaultdict(lambda: {
+        "sessions": 0, "playSec": 0.0, "games": Counter(), "online": 0.0, "correct": 0, "wrong": 0,
+        "scores": [], "talks": 0, "talkSec": 0.0, "turns": 0, "days": set(), "last": "",
+    })
+
+    def touch(r: dict[str, Any], ts: str | None) -> None:
+        t = _parse(ts)
+        if t:
+            r["days"].add(_day(t))
+            r["last"] = max(r["last"], t.isoformat())
+
+    for s in act["sessions"]:
+        r = out[s["profileId"]]
+        r["sessions"] += 1
+        r["games"][title.get(s.get("gameId"), f"#{s.get('gameId')}")] += 1
+        r["playSec"] += _sess_secs(s) or 0
+        r["correct"] += len(_ids(s.get("cv")))
+        r["wrong"] += len(_ids(s.get("wv")))
+        touch(r, s.get("startedAt") or s.get("createdAt"))
+    for b in act["beats"]:
+        r = out[b["profileId"]]
+        r["online"] += b["m"] if isinstance(b.get("m"), (int, float)) else 1
+        touch(r, b.get("createdAt"))
+    for e in act["learned"]:
+        r = out[e["profileId"]]
+        if isinstance(e.get("s"), (int, float)):
+            r["scores"].append(e["s"])
+        touch(r, e.get("createdAt"))
+    for t in act["talks"]:
+        r = out[t["profileId"]]
+        r["talks"] += 1
+        r["talkSec"] += _talk_secs(t) or 0
+        r["turns"] += t.get("turnCount") or 0
+        touch(r, t.get("startedAt"))
+    return out
+
+
+def _row(pid: Any, r: dict[str, Any], prof: dict[str, Any]) -> dict[str, Any]:
+    answered = r["correct"] + r["wrong"]
+    return {
+        "profileId": pid, "name": prof.get("fullname"), "role": prof.get("role"),
+        "sessions": r["sessions"], "playMinutes": round(r["playSec"] / 60),
+        "onlineMinutes": round(r["online"]), "daysActive": len(r["days"]),
+        "topGames": [{"title": k, "count": n} for k, n in r["games"].most_common(3)],
+        "flashAnswered": answered, "flashAccuracy": round(r["correct"] * 100 / answered) if answered else None,
+        "pronAvg": round(sum(r["scores"]) / len(r["scores"]), 1) if r["scores"] else None,
+        "pronCount": len(r["scores"]),
+        "talks": r["talks"], "talkMinutes": round(r["talkSec"] / 60),
+        "lastActive": r["last"] or None,
+    }
+
+
+async def _profiles(sb, ids: list[Any]) -> dict[Any, dict[str, Any]]:
+    out: dict[Any, dict[str, Any]] = {}
+    ids = [i for i in ids if i is not None]
+    for i in range(0, len(ids), 200):
+        rows, _ = await sb.rest("GET", "profile", [("select", "id,fullname,role,createdAt"),
+                                                   ("id", f"in.({','.join(map(str, ids[i:i + 200]))})")])
+        for p in rows or []:
+            out[p["id"]] = p
+    return out
+
+
+@router.get("/learners")
+@_supa_errors
+async def learners(days: int = 30) -> dict[str, Any]:
+    from . import routes
+
+    days = max(1, min(365, days))
+    sb = await routes.POOL.get(routes._settings())
+    now = dt.datetime.now(dt.timezone.utc)
+    summ = _summary(await _activity(sb, now - dt.timedelta(days=days)))
+    prof = await _profiles(sb, sorted(summ))
+    rows = [_row(pid, r, prof.get(pid, {})) for pid, r in summ.items()]
+    rows.sort(key=lambda x: x["lastActive"] or "", reverse=True)
+    return {"days": days, "generatedAt": now.isoformat(), "learners": rows}
+
+
+@router.get("/learners/{pid}")
+@_supa_errors
+async def learner(pid: int, days: int = 30) -> dict[str, Any]:
+    from . import routes
+
+    days = max(1, min(365, days))
+    sb = await routes.POOL.get(routes._settings())
+    now = dt.datetime.now(dt.timezone.utc)
+    act = await _activity(sb, now - dt.timedelta(days=days), pid)
+    prof = (await _profiles(sb, [pid])).get(pid)
+    if not prof:
+        raise HTTPException(404, "Không có profile này")
+    r = _summary(act).get(pid)
+    title = {g["id"]: g.get("title") or f"#{g['id']}" for g in act["games"]}
+
+    # theo ngày
+    by_day: dict[str, dict[str, Any]] = {}
+    for i in range(days - 1, -1, -1):
+        d = _day(now - dt.timedelta(days=i))
+        by_day[d] = {"day": d, "sessions": 0, "minutes": 0.0}
+    for s in act["sessions"]:
+        t = _parse(s.get("startedAt") or s.get("createdAt"))
+        if t and _day(t) in by_day:
+            by_day[_day(t)]["sessions"] += 1
+    for b in act["beats"]:
+        t = _parse(b.get("createdAt"))
+        if t and _day(t) in by_day:
+            by_day[_day(t)]["minutes"] += b["m"] if isinstance(b.get("m"), (int, float)) else 1
+
+    # theo từ: flashcard đúng/sai + điểm phát âm
+    words: dict[int, dict[str, Any]] = defaultdict(lambda: {"correct": 0, "wrong": 0, "scores": [], "last": ""})
+    for s in act["sessions"]:
+        ts = s.get("startedAt") or s.get("createdAt") or ""
+        for key, field in (("cv", "correct"), ("wv", "wrong")):
+            for v in _ids(s.get(key)):
+                words[v][field] += 1
+                words[v]["last"] = max(words[v]["last"], ts)
+    for e in act["learned"]:
+        v = e.get("vid")
+        if isinstance(v, (int, float)) and isinstance(e.get("s"), (int, float)):
+            words[int(v)]["scores"].append(e["s"])
+            words[int(v)]["last"] = max(words[int(v)]["last"], e.get("createdAt") or "")
+    vocab: dict[int, dict[str, Any]] = {}
+    ids = sorted(words)
+    for i in range(0, len(ids), 200):
+        rows, _ = await sb.rest("GET", "vocabulary", [("select", "id,word,level"),
+                                                      ("id", f"in.({','.join(map(str, ids[i:i + 200]))})")])
+        for v in rows or []:
+            vocab[v["id"]] = v
+    word_rows = []
+    for vid, w in words.items():
+        n = w["correct"] + w["wrong"]
+        word_rows.append({
+            "vocabularyId": vid, "word": vocab.get(vid, {}).get("word"), "level": vocab.get(vid, {}).get("level"),
+            "correct": w["correct"], "wrong": w["wrong"], "accuracy": round(w["correct"] * 100 / n) if n else None,
+            "pronAvg": round(sum(w["scores"]) / len(w["scores"]), 1) if w["scores"] else None,
+            "pronCount": len(w["scores"]), "last": w["last"] or None,
+        })
+    word_rows.sort(key=lambda x: (x["accuracy"] if x["accuracy"] is not None else 101, -(x["wrong"])))
+
+    games: dict[str, dict[str, Any]] = defaultdict(lambda: {"count": 0, "scores": [], "secs": 0.0})
+    for s in act["sessions"]:
+        g = games[title.get(s.get("gameId"), f"#{s.get('gameId')}")]
+        g["count"] += 1
+        g["secs"] += _sess_secs(s) or 0
+        if isinstance(s.get("score"), (int, float)):
+            g["scores"].append(s["score"])
+    recent = sorted(act["sessions"], key=lambda s: s.get("startedAt") or s.get("createdAt") or "", reverse=True)[:60]
+
+    return {
+        "days": days, "generatedAt": now.isoformat(),
+        "profile": {"id": pid, "name": prof.get("fullname"), "role": prof.get("role"), "createdAt": prof.get("createdAt")},
+        "summary": _row(pid, r, prof) if r else None,
+        "byDay": [{"day": v["day"], "sessions": v["sessions"], "minutes": round(v["minutes"])} for v in by_day.values()],
+        "words": word_rows,
+        "games": sorted([{"title": k, "count": v["count"], "minutes": round(v["secs"] / 60),
+                          "avgScore": round(sum(v["scores"]) / len(v["scores"]), 1) if v["scores"] else None}
+                         for k, v in games.items()], key=lambda x: -x["count"]),
+        "recent": [{"id": s["id"], "game": title.get(s.get("gameId"), f"#{s.get('gameId')}"),
+                    "startedAt": s.get("startedAt") or s.get("createdAt"),
+                    "minutes": round((_sess_secs(s) or 0) / 60, 1),
+                    "score": s.get("score"), "result": s.get("resultStatus"),
+                    "correct": len(_ids(s.get("cv"))), "wrong": len(_ids(s.get("wv")))} for s in recent],
+        "talks": [{"startedAt": t.get("startedAt"), "activity": t.get("activity") or "free_talk",
+                   "minutes": round((_talk_secs(t) or 0) / 60, 1), "turns": t.get("turnCount"),
+                   "result": t.get("resultStatus")}
+                  for t in sorted(act["talks"], key=lambda t: t.get("startedAt") or "", reverse=True)[:40]],
+    }

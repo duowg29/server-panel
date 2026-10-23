@@ -60,15 +60,30 @@ class Supa:
     async def aclose(self) -> None:
         await self._client.aclose()
 
+    async def _send(self, method: str, url: str, **kw: Any) -> httpx.Response:
+        """Gửi request; kết nối giữ sẵn trong pool bị Supabase đóng lúc nhàn
+        rỗi thì lệnh ĐỌC được gửi lại một lần. Lệnh ghi không gửi lại (có thể
+        đã chạy rồi) — báo lỗi mạng cho người dùng tự kiểm."""
+        tries = 2 if method in ("GET", "HEAD") else 1
+        for i in range(tries):
+            try:
+                return await self._client.request(method, url, **kw)
+            except (httpx.ReadError, httpx.RemoteProtocolError, httpx.ConnectError, httpx.WriteError) as e:
+                if i + 1 >= tries:
+                    raise SupaError(502, f"Lỗi mạng khi gọi Supabase ({type(e).__name__}) — thử lại") from e
+            except httpx.TimeoutException as e:
+                raise SupaError(504, "Supabase trả lời quá lâu — thử lại") from e
+        raise AssertionError("unreachable")
+
     # ── PostgREST ────────────────────────────────────────────────────
     async def openapi(self) -> dict[str, Any]:
-        r = await self._client.get("/rest/v1/", headers={"Accept": "application/openapi+json"})
+        r = await self._send("GET", "/rest/v1/", headers={"Accept": "application/openapi+json"})
         if r.status_code >= 400:
             raise _err(r)
         return r.json()
 
     async def rpc(self, name: str, params: dict[str, Any] | None = None) -> Any:
-        r = await self._client.post(f"/rest/v1/rpc/{name}", json=params or {})
+        r = await self._send("POST", f"/rest/v1/rpc/{name}", json=params or {})
         if r.status_code >= 400:
             raise _err(r)
         if not r.content:
@@ -90,7 +105,7 @@ class Supa:
         headers = dict(extra_headers or {})
         if prefer:
             headers["Prefer"] = prefer
-        r = await self._client.request(method, f"/rest/v1/{table}", params=params, json=body, headers=headers)
+        r = await self._send(method, f"/rest/v1/{table}", params=params, json=body, headers=headers)
         if r.status_code >= 400:
             raise _err(r)
         data = r.json() if r.content else None
@@ -98,14 +113,14 @@ class Supa:
 
     # ── Auth admin ───────────────────────────────────────────────────
     async def auth(self, method: str, path: str, params: dict[str, Any] | None = None, body: Any = None) -> Any:
-        r = await self._client.request(method, f"/auth/v1/admin/{path}", params=params, json=body)
+        r = await self._send(method, f"/auth/v1/admin/{path}", params=params, json=body)
         if r.status_code >= 400:
             raise _err(r)
         return r.json() if r.content else None
 
     # ── Storage ──────────────────────────────────────────────────────
     async def storage(self, method: str, path: str, body: Any = None, params: dict[str, Any] | None = None) -> Any:
-        r = await self._client.request(method, f"/storage/v1/{path}", json=body, params=params)
+        r = await self._send(method, f"/storage/v1/{path}", json=body, params=params)
         if r.status_code >= 400:
             raise _err(r)
         return r.json() if r.content else None

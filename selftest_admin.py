@@ -333,6 +333,34 @@ async def main() -> int:
     r = await c.post("/api/admin/ocr/extract", json={"name": "a.exe", "data": "AAAA"})
     check(r.status_code == 415, "từ chối loại file lạ")
 
+    print("== số liệu theo học sinh")
+    from panel.admin import stats
+    act = {
+        "games": [{"id": 1, "title": "FlashCard"}, {"id": 13, "title": "Tiny Farm"}],
+        "sessions": [
+            {"id": 1, "profileId": 7, "gameId": 1, "startedAt": "2026-10-01T01:00:00+00:00",
+             "endedAt": "2026-10-01T01:10:00+00:00", "cv": [5, 6, 7], "wv": [8]},
+            # phiên treo 5 giờ, game tự đo 600 s → tin số game đo
+            {"id": 2, "profileId": 7, "gameId": 13, "startedAt": "2026-10-02T01:00:00+00:00",
+             "endedAt": "2026-10-02T06:00:00+00:00", "dps": 600, "cv": None, "wv": None},
+            # phiên treo không có số đo → không tính giờ
+            {"id": 3, "profileId": 9, "gameId": 13, "startedAt": "2026-10-02T01:00:00+00:00",
+             "endedAt": "2026-10-02T09:00:00+00:00"},
+        ],
+        "beats": [{"profileId": 7, "createdAt": "2026-10-03T16:30:00+00:00", "m": 1}] * 5,
+        "learned": [{"profileId": 7, "createdAt": "2026-10-01T01:05:00+00:00", "vid": 5, "s": 80},
+                    {"profileId": 7, "createdAt": "2026-10-01T01:06:00+00:00", "vid": 6, "s": None}],
+        "talks": [{"profileId": 9, "startedAt": "2026-10-04T01:00:00+00:00", "dur": 90, "turnCount": 4}],
+    }
+    summ = stats._summary(act)
+    a7, a9 = stats._row(7, summ[7], {"fullname": "A"}), stats._row(9, summ[9], {})
+    check(a7["sessions"] == 2 and a7["playMinutes"] == 20, "giờ chơi: tin số game đo, bỏ phiên treo")
+    check(a7["flashAnswered"] == 4 and a7["flashAccuracy"] == 75, "flashcard đúng/sai theo id từ")
+    check(a7["pronAvg"] == 80 and a7["pronCount"] == 1, "điểm phát âm bỏ lượt không có điểm")
+    check(a7["onlineMinutes"] == 5 and a7["daysActive"] == 3, "phút online + số ngày theo giờ VN (16:30 UTC = hôm sau)")
+    check(a9["playMinutes"] == 0 and a9["talks"] == 1 and a9["talkMinutes"] == 2, "Free Talk tính riêng")
+    check(a7["topGames"][0]["count"] == 1 and a7["lastActive"].startswith("2026-10-03T16:30"), "game chơi nhiều + lần cuối")
+
     print("== nhật ký")
     log = (await c.get("/api/admin/audit")).json()
     kinds = [x["kind"] for x in log]
