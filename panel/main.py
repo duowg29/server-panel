@@ -28,6 +28,7 @@ from fastapi.staticfiles import StaticFiles
 from . import config as cfgmod
 from .admin.ocr import router as admin_ocr_router
 from .admin.routes import router as admin_router
+from .admin.stats import router as admin_stats_router
 from .archive import SeriesArchive
 from .config import Config, ConfigError, mask_env
 from .health import HealthPoller
@@ -391,6 +392,7 @@ async def admin_page() -> FileResponse:
 
 app.include_router(admin_router)
 app.include_router(admin_ocr_router)
+app.include_router(admin_stats_router)
 
 
 app.mount("/static", StaticFiles(directory=str(STATIC)), name="static")
