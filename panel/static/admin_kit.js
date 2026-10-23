@@ -220,6 +220,90 @@ const Kit = {
     a.click();
   },
 
+  /** Một bảng quản lý gọi hàm tt_admin_*:
+   *  create / edit: {fields, fn, params(v, row), values(row)} · del: {fn, params(row), label(row)}
+   *  toggles: [{label, get(row), fn, params(row, on)}] · actions(row) → [Node] · onChange() để tải lại. */
+  section(parent, { title, desc, rows, columns, create, edit, del, toggles = [], actions, onChange, csvName, pageSize = 25, filter }) {
+    const box = el('div', 'ksection');
+    if (title) {
+      const h = el('div', 'ksection__h');
+      h.innerHTML = `<h3>${esc(title)}</h3><span class="muted">${fmtNum(rows.length)}</span>` + (desc ? `<p class="muted small">${desc}</p>` : '');
+      if (create) {
+        const b = Admin.writeOnly(el('button', 'go', create.label || '＋  Thêm'));
+        b.onclick = () => Kit.formModal({
+          title: `${create.label ? create.label.replace(/^＋\s*/, '') : 'Thêm'} — ${title}`,
+          fields: create.fields, values: create.values ? create.values() : {}, okLabel: 'Thêm',
+          onSubmit: async v => { await Kit.mustWrite(create.fn, create.params(v), { ok: 'Đã thêm' }); onChange && onChange(); },
+        });
+        h.appendChild(b);
+      }
+      box.appendChild(h);
+    }
+    const cols = columns.slice();
+    for (const t of toggles) {
+      cols.push({ key: '_t_' + t.label, label: t.label, sort: false, render: r => {
+        const on = !!t.get(r);
+        const b = Admin.writeOnly(el('button', on ? 'on' : 'ghost', on ? '● bật' : '○ tắt'));
+        b.onclick = async () => {
+          try { const ok = await Kit.write(t.fn, t.params(r, !on), { ok: 'Đã đổi' }); if (ok) onChange && onChange(); }
+          catch (e) { toast(e.message, 'err'); }
+        };
+        return b;
+      } });
+    }
+    if (edit || del || actions) {
+      cols.push({ key: '_a', label: 'Thao tác', sort: false, render: r => {
+        const d = el('div', 'btns');
+        if (edit) {
+          const b = Admin.writeOnly(el('button', '', '✎'));
+          b.title = 'Sửa';
+          b.onclick = () => Kit.formModal({
+            title: `Sửa — ${title || ''}`, fields: edit.fields, values: edit.values ? edit.values(r) : r, okLabel: 'Lưu',
+            onSubmit: async v => { await Kit.mustWrite(edit.fn, edit.params(v, r), { ok: 'Đã lưu' }); onChange && onChange(); },
+          });
+          d.appendChild(b);
+        }
+        if (actions) for (const n of actions(r)) d.appendChild(n);
+        if (del) {
+          const b = Admin.writeOnly(el('button', 'stop', '🗑'));
+          b.title = 'Xoá';
+          b.onclick = async () => {
+            try {
+              const ok = await Kit.write(del.fn, del.params(r), {
+                confirm: `Xoá <b>${esc(del.label ? del.label(r) : (r.title || r.name || r.codename || r.id))}</b>?` + (del.note ? `<br><span class="muted">${del.note}</span>` : ''),
+                ok: 'Đã xoá', danger: true,
+              });
+              if (ok) onChange && onChange();
+            } catch (e) { toast(e.message, 'err'); }
+          };
+          d.appendChild(b);
+        }
+        return d;
+      } });
+    }
+    let shown = rows;
+    const toolbar = [];
+    if (filter !== false && rows.length > 8) {
+      const q = el('input', 'ainput');
+      q.type = 'search';
+      q.placeholder = '⌕  lọc…';
+      q.oninput = () => {
+        const s = q.value.trim().toLowerCase();
+        shown = s ? rows.filter(r => JSON.stringify(r).toLowerCase().includes(s)) : rows;
+        tbl.setRows(shown);
+      };
+      toolbar.push(q);
+    }
+    const tbl = Kit.table(box, { rows, columns: cols, pageSize, csvName, toolbar });
+    parent.appendChild(box);
+    return box;
+  },
+
+  /** Chọn từ một danh sách: [[giá trị, nhãn]]. */
+  opts(rows, val = 'id', label = r => r.title || r.name || r.codename || r.id) {
+    return rows.map(r => [r[val], `#${r[val]} ${label(r)}`]);
+  },
+
   // ── tab ────────────────────────────────────────────────────────────
   tabs(parent, items, active) {
     const head = el('div', 'tabs');

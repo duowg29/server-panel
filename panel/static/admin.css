@@ -325,3 +325,12 @@ h4.ksub { margin-top: 1rem; }
 .kpick__it:hover { background: var(--bg-raise); }
 .kpick__it.on { background: var(--cyan-dim); color: var(--cyan); }
 @media (max-width: 1000px) { .ktree { grid-template-columns: 1fr; } }
+
+/* ── Kit.section ───────────────────────────────────────────────────── */
+.ksection { margin-bottom: 1.1rem; }
+.ksection__h { display: flex; flex-wrap: wrap; align-items: baseline; gap: .3rem .7rem; margin-bottom: .45rem; }
+.ksection__h h3 { margin: 0; font-size: 13px; letter-spacing: .1em; text-transform: uppercase; color: var(--fg-bright); }
+.ksection__h p { flex-basis: 100%; margin: 0; }
+.ksection__h button { margin-left: auto; }
+.ksection .ktable__bar { justify-content: flex-start; }
+.ksection .ktable__bar input { flex: 1; max-width: 22rem; }
