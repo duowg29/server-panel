@@ -6,6 +6,8 @@ const Kit = {
   // ── định dạng ──────────────────────────────────────────────────────
   date(v) { return v ? new Date(v).toLocaleDateString('vi-VN') : '—'; },
   dateTime(v) { return v ? new Date(v).toLocaleString('vi-VN') : '—'; },
+  /** "dd/mm" — nhãn trục ngày. */
+  dm(v) { if (!v) return '—'; const d = new Date(v); return `${String(d.getDate()).padStart(2, '0')}/${String(d.getMonth() + 1).padStart(2, '0')}`; },
   num: fmtNum,
   text(v) { return v == null || v === '' ? '—' : String(v); },
   json(v) { return v == null ? '—' : typeof v === 'object' ? JSON.stringify(v) : String(v); },
@@ -434,4 +436,119 @@ const Kit = {
     if (r === null) throw new Error('Chưa thực hiện — cần bật "Cho phép ghi"');
     return r;
   },
+};
+
+// ── biểu đồ / avatar dùng chung ─────────────────────────────────────────
+/** Biểu đồ cột đứng (SVG) — data: [{label, value, sub}]. */
+function columnChart(parent, data, { height = 170, unit = '' } = {}) {
+  const box = el('div', 'kcol');
+  const w = Math.max(data.length * 22, 300);
+  const max = Math.max(1, ...data.map(d => d.value));
+  const bw = w / data.length;
+  const svgNS = 'http://www.w3.org/2000/svg';
+  const svg = document.createElementNS(svgNS, 'svg');
+  svg.setAttribute('viewBox', `0 0 ${w} ${height}`);
+  svg.setAttribute('preserveAspectRatio', 'none');
+  for (let i = 0; i <= 4; i++) {
+    const y = 4 + (height - 4) * i / 4;
+    const ln = document.createElementNS(svgNS, 'line');
+    Object.entries({ x1: 0, x2: w, y1: y, y2: y, class: 'grid' }).forEach(([k, v]) => ln.setAttribute(k, v));
+    svg.appendChild(ln);
+  }
+  data.forEach((d, i) => {
+    const h = d.value ? Math.max(2, (height - 6) * d.value / max) : 0;
+    const r = document.createElementNS(svgNS, 'rect');
+    Object.entries({ x: i * bw + bw * .18, y: height - h, width: bw * .64, height: h, rx: 2, class: 'bar' }).forEach(([k, v]) => r.setAttribute(k, v));
+    const t = document.createElementNS(svgNS, 'title');
+    t.textContent = `${d.label}: ${fmtNum(d.value)}${unit}${d.sub ? ' · ' + d.sub : ''}`;
+    r.appendChild(t);
+    svg.appendChild(r);
+  });
+  box.appendChild(svg);
+  axisLabels(box, data.map((d, i) => [(i * bw + bw / 2) / w, d.label]));
+  box.appendChild(el('div', 'kcol__max muted small', `cao nhất ${fmtNum(max)}${unit}`));
+  parent.appendChild(box);
+  return box;
+}
+
+/** Nhãn trục X bằng HTML (SVG kéo giãn preserveAspectRatio=none làm méo chữ).
+    items: [[vị trí 0..1, nhãn]] — tự thưa ra cho khỏi chồng nhau. */
+function axisLabels(box, items) {
+  const row = el('div', 'kcol__x');
+  if (!items.length) return;
+  const step = Math.max(1, Math.ceil(items.length / 9));
+  const idx = [];
+  for (let i = 0; i < items.length; i += step) idx.push(i);
+  const last = items.length - 1;
+  if (idx[idx.length - 1] !== last) {
+    if (idx.length > 1 && last - idx[idx.length - 1] < step / 2) idx.pop();
+    idx.push(last);
+  }
+  idx.forEach(i => {
+    const [pos, label] = items[i];
+    const s = el('span', null, label);
+    s.style.left = (pos * 100).toFixed(2) + '%';
+    row.appendChild(s);
+  });
+  box.appendChild(row);
+}
+
+/** Biểu đồ đường (SVG) — data: [{label, value}]. Dùng cho số dư theo thời gian. */
+function lineChart(parent, data, { height = 170, unit = '' } = {}) {
+  const box = el('div', 'kcol');
+  if (!data.length) { parent.appendChild(el('div', 'aempty', 'Chưa có dữ liệu.')); return box; }
+  const w = Math.max(data.length * 14, 300);
+  const vals = data.map(d => d.value);
+  const max = Math.max(...vals, 0), min = Math.min(...vals, 0);
+  const span = max - min || 1;
+  const x = i => (data.length === 1 ? w / 2 : 6 + (w - 12) * i / (data.length - 1));
+  const y = v => 6 + (height - 12) * (1 - (v - min) / span);
+  const svgNS = 'http://www.w3.org/2000/svg';
+  const svg = document.createElementNS(svgNS, 'svg');
+  svg.setAttribute('viewBox', `0 0 ${w} ${height}`);
+  svg.setAttribute('preserveAspectRatio', 'none');
+  const mk = (tag, attrs) => { const n = document.createElementNS(svgNS, tag); for (const [k2, v] of Object.entries(attrs)) n.setAttribute(k2, v); svg.appendChild(n); return n; };
+  for (let i = 0; i <= 4; i++) mk('line', { x1: 0, x2: w, y1: 6 + (height - 12) * i / 4, y2: 6 + (height - 12) * i / 4, class: 'grid' });
+  if (min < 0) mk('line', { x1: 0, x2: w, y1: y(0), y2: y(0), class: 'zero' });
+  const pts = data.map((d, i) => `${x(i)},${y(d.value)}`).join(' ');
+  mk('polygon', { points: `${x(0)},${y(Math.max(min, 0))} ${pts} ${x(data.length - 1)},${y(Math.max(min, 0))}`, class: 'area' });
+  mk('polyline', { points: pts, class: 'line', fill: 'none' });
+  data.forEach((d, i) => {
+    // chấm = đoạn thẳng dài 0, nét tròn không co giãn → luôn tròn dù SVG bị kéo
+    const c = mk('line', { x1: x(i), x2: x(i), y1: y(d.value), y2: y(d.value), class: 'dot' });
+    const t = document.createElementNS(svgNS, 'title');
+    t.textContent = `${d.label}: ${fmtNum(d.value)}${unit}`;
+    c.appendChild(t);
+  });
+  box.appendChild(svg);
+  axisLabels(box, data.map((d, i) => [x(i) / w, d.label]));
+  box.appendChild(el('div', 'kcol__max muted small', `thấp nhất ${fmtNum(min)}${unit} · cao nhất ${fmtNum(max)}${unit}`));
+  parent.appendChild(box);
+  return box;
+}
+
+/** Ảnh đại diện tròn. `src` là URL đầy đủ hoặc đường dẫn trong bucket (status.avatar_base);
+    không có ảnh / ảnh lỗi → chữ cái đầu của tên. */
+Kit.avatar = function (src, name, size = 32) {
+  const box = el('span', 'kavatar');
+  box.style.width = box.style.height = size + 'px';
+  box.style.fontSize = Math.round(size * 0.42) + 'px';
+  const initial = () => {
+    box.innerHTML = '';
+    box.textContent = (String(name || '?').trim()[0] || '?').toUpperCase();
+    box.classList.add('kavatar--txt');
+  };
+  const raw = String(src || '').trim();
+  if (!raw) { initial(); return box; }
+  const base = (Admin.status && Admin.status.avatar_base) || '';
+  const url = /^(https?:)?\/\//i.test(raw) || raw.startsWith('data:') ? raw : (base ? base + raw.replace(/^\/+/, '') : '');
+  if (!url) { initial(); return box; }
+  const img = el('img');
+  img.loading = 'lazy';
+  img.alt = '';
+  img.referrerPolicy = 'no-referrer';
+  img.onerror = initial;
+  img.src = url;
+  box.appendChild(img);
+  return box;
 };

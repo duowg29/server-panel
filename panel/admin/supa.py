@@ -61,15 +61,20 @@ class Supa:
         await self._client.aclose()
 
     async def _send(self, method: str, url: str, **kw: Any) -> httpx.Response:
-        """Gửi request; kết nối giữ sẵn trong pool bị Supabase đóng lúc nhàn
-        rỗi thì lệnh ĐỌC được gửi lại một lần. Lệnh ghi không gửi lại (có thể
-        đã chạy rồi) — báo lỗi mạng cho người dùng tự kiểm."""
-        tries = 2 if method in ("GET", "HEAD") else 1
-        for i in range(tries):
+        """Gửi request, có gửi lại khi mạng chập chờn:
+          * chưa nối được (ConnectError/ConnectTimeout) → thử tối đa 3 lần, mọi lệnh;
+          * nối rồi mà đứt (kết nối cũ trong pool bị đóng) → chỉ gửi lại lệnh ĐỌC
+            một lần. Lệnh ghi có thể đã chạy rồi nên báo lỗi để người dùng tự kiểm."""
+        safe = method in ("GET", "HEAD")
+        for i in range(3):
             try:
                 return await self._client.request(method, url, **kw)
-            except (httpx.ReadError, httpx.RemoteProtocolError, httpx.ConnectError, httpx.WriteError) as e:
-                if i + 1 >= tries:
+            except (httpx.ConnectError, httpx.ConnectTimeout) as e:
+                # chưa nối được thì request chưa đi — gửi lại an toàn cho mọi lệnh
+                if i == 2:
+                    raise SupaError(502, f"Không nối được tới Supabase ({type(e).__name__}) — kiểm tra mạng") from e
+            except (httpx.ReadError, httpx.RemoteProtocolError, httpx.WriteError) as e:
+                if not safe or i >= 1:
                     raise SupaError(502, f"Lỗi mạng khi gọi Supabase ({type(e).__name__}) — thử lại") from e
             except httpx.TimeoutException as e:
                 raise SupaError(504, "Supabase trả lời quá lâu — thử lại") from e

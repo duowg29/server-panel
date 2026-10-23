@@ -73,9 +73,17 @@ const Lessons = {
   async kpis(box) {
     const names = [['learning_path', 'Lộ trình'], ['topic', 'Topic'], ['unit', 'Unit'], ['unit_content', 'Nội dung unit'],
       ['vocabulary', 'Từ vựng'], ['grammar', 'Ngữ pháp'], ['game', 'Game']];
-    const totals = await Promise.all(names.map(([t]) => api(`/api/admin/tables/${t}/rows?limit=1`).then(r => r.total).catch(() => null)));
+    const [totals, eff] = await Promise.all([
+      Promise.all(names.map(([t]) => api(`/api/admin/tables/${t}/rows?limit=1`).then(r => r.total).catch(() => null))),
+      // "hiệu quả học" như trang cũ: nội dung đã học xong + từ đã thành thạo (toàn hệ thống)
+      rpc('tt_admin_lesson_effective_stats').catch(() => null),
+    ]);
     box.innerHTML = '';
-    Kit.kpis(box, names.map(([, label], i) => ({ label, value: fmtNum(totals[i]) })));
+    Kit.kpis(box, [
+      ...names.map(([, label], i) => ({ label, value: fmtNum(totals[i]) })),
+      { label: 'Lượt học xong nội dung', value: eff ? fmtNum(eff.completedCount) : '—', sub: 'mọi học sinh cộng lại' },
+      { label: 'Từ đã thành thạo', value: eff ? fmtNum(eff.masteredCount) : '—', sub: 'mọi học sinh cộng lại' },
+    ]);
   },
 
   // ── cây nội dung ───────────────────────────────────────────────────

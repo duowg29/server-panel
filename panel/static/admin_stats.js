@@ -1,43 +1,6 @@
 /* Số liệu học tập (Dashboard P2): phiên chơi, điểm phát âm theo từng từ,
    thiết bị đang hoạt động. Số liệu tổng hợp ở backend: /api/admin/stats/learning. */
 
-/** Biểu đồ cột đứng (SVG) — data: [{label, value, sub}]. */
-function columnChart(parent, data, { height = 170, unit = '' } = {}) {
-  const box = el('div', 'kcol');
-  const w = Math.max(data.length * 22, 300);
-  const max = Math.max(1, ...data.map(d => d.value));
-  const bw = w / data.length;
-  const svgNS = 'http://www.w3.org/2000/svg';
-  const svg = document.createElementNS(svgNS, 'svg');
-  svg.setAttribute('viewBox', `0 0 ${w} ${height + 22}`);
-  svg.setAttribute('preserveAspectRatio', 'none');
-  for (let i = 0; i <= 4; i++) {
-    const y = 4 + (height - 4) * i / 4;
-    const ln = document.createElementNS(svgNS, 'line');
-    Object.entries({ x1: 0, x2: w, y1: y, y2: y, class: 'grid' }).forEach(([k, v]) => ln.setAttribute(k, v));
-    svg.appendChild(ln);
-  }
-  data.forEach((d, i) => {
-    const h = d.value ? Math.max(2, (height - 6) * d.value / max) : 0;
-    const r = document.createElementNS(svgNS, 'rect');
-    Object.entries({ x: i * bw + bw * .18, y: height - h, width: bw * .64, height: h, rx: 2, class: 'bar' }).forEach(([k, v]) => r.setAttribute(k, v));
-    const t = document.createElementNS(svgNS, 'title');
-    t.textContent = `${d.label}: ${fmtNum(d.value)}${unit}${d.sub ? ' · ' + d.sub : ''}`;
-    r.appendChild(t);
-    svg.appendChild(r);
-    if (data.length <= 31 ? i % Math.ceil(data.length / 10) === 0 || i === data.length - 1 : i % 7 === 0) {
-      const tx = document.createElementNS(svgNS, 'text');
-      Object.entries({ x: i * bw + bw / 2, y: height + 16, class: 'lbl' }).forEach(([k, v]) => tx.setAttribute(k, v));
-      tx.textContent = d.label;
-      svg.appendChild(tx);
-    }
-  });
-  box.appendChild(svg);
-  box.appendChild(el('div', 'kcol__max muted small', `cao nhất ${fmtNum(max)}${unit}`));
-  parent.appendChild(box);
-  return box;
-}
-
 /** Ô điểm có thanh màu (đỏ < 50 ≤ vàng < 80 ≤ xanh). */
 function scoreCell(v, sub) {
   if (v == null) return '—';
@@ -52,6 +15,15 @@ function fmtMin(m) {
   if (m == null) return '—';
   if (m < 60) return `${m} phút`;
   return `${Math.floor(m / 60)} giờ ${String(m % 60).padStart(2, '0')}`;
+}
+
+/** "English Vocabulary in Use - Elementary" → "Elementary". */
+function shortPath(t) {
+  return String(t || '—').replace(/^English Vocabulary in Use\s*[-–]\s*/i, '');
+}
+
+function h3(parent, text) {
+  parent.appendChild(el('h3', 'kh3', text));
 }
 
 const LearningStats = {
@@ -86,6 +58,7 @@ const LearningStats = {
 
   render(main, args = []) {
     if (args[0] === 'learner' && args[1]) return this.renderLearner(main, Number(args[1]));
+    if (args[0] === 'unit' && args[1]) return this.renderUnit(main, Number(args[1]));
     const bar = pageHead(main, 'Số liệu học tập',
       'Phiên chơi, điểm phát âm theo từng từ và theo từng học sinh, thiết bị đang hoạt động. Giờ Việt Nam.');
     const host = el('div');
@@ -95,6 +68,7 @@ const LearningStats = {
       Kit.tabs(host, [
         { id: 'overview', label: 'Tổng quan', render: b => { this.tab = 'overview'; return this.loadOverview(b); } },
         { id: 'learners', label: 'Học sinh', render: b => { this.tab = 'learners'; return this.loadLearners(b); } },
+        { id: 'lessons', label: 'Bài học', render: b => { this.tab = 'lessons'; return this.loadLessons(b); } },
       ], this.tab);
     };
     this.periodBar(bar, draw);
@@ -128,7 +102,13 @@ const LearningStats = {
       rowClass: () => 'clickable',
       columns: [
         { key: 'name', label: 'Học sinh', value: r => r.name || `#${r.profileId}`,
-          render: r => { const n = el('div'); n.innerHTML = `<b>${esc(r.name || '—')}</b> <span class="muted small">#${r.profileId}</span>`; return n; } },
+          render: r => {
+            const row = el('div', 'kuser-row');
+            const n = el('div');
+            n.innerHTML = `<b>${esc(r.name || '—')}</b> <span class="muted small">#${r.profileId}</span>`;
+            row.append(Kit.avatar(r.avatar, r.name, 28), n);
+            return row;
+          } },
         { key: 'daysActive', label: 'Số ngày học', render: r => fmtNum(r.daysActive) },
         { key: 'sessions', label: 'Phiên', render: r => fmtNum(r.sessions) },
         { key: 'playMinutes', label: 'Thời gian chơi', render: r => fmtMin(r.playMinutes) },
@@ -144,6 +124,180 @@ const LearningStats = {
     host.appendChild(el('div', 'muted small', 'Bấm vào một dòng để xem chi tiết từng từ, từng phiên của học sinh đó.'));
   },
 
+  // ── theo bài học ──────────────────────────────────────────────────
+  pathFilter: '',
+  activeOnly: true,
+
+  async loadLessons(host) {
+    const d = await this.loading(host, () => api('/api/admin/stats/lessons'));
+    if (!d) return;
+    const T = d.totals;
+    host.appendChild(el('div', 'muted small kstats-note', 'Tính từ trước tới nay (tiến độ học là luỹ kế) — không theo kỳ ngày ở trên.'));
+    Kit.kpis(host, [
+      { label: 'Unit có người học', value: `${fmtNum(T.activeUnits)} / ${fmtNum(T.units)}` },
+      { label: 'Lượt hoàn thành unit', value: fmtNum(T.completions), sub: 'học sinh xong mọi nội dung bắt buộc' },
+      { label: 'Phiên chơi trong unit', value: fmtNum(T.sessionsInUnits) },
+      { label: 'Phiên ngoài lộ trình', value: fmtNum(T.sessionsNoUnit), sub: 'TinyFarm, game tự do, ôn từ yếu…' },
+    ]);
+
+    h3(host, 'Theo lộ trình');
+    Kit.table(host, {
+      rows: d.paths, pageSize: 10,
+      onRow: r => { this.pathFilter = String(r.pathId); this.loadLessonsKeep(host, d); }, rowClass: () => 'clickable',
+      columns: [
+        { key: 'path', label: 'Lộ trình', render: r => shortPath(r.path) },
+        { key: 'topics', label: 'Chủ đề', render: r => fmtNum(r.topics) },
+        { key: 'activeUnits', label: 'Unit có người học', render: r => `${fmtNum(r.activeUnits)} / ${fmtNum(r.units)}` },
+        { key: 'learners', label: 'Học sinh', render: r => fmtNum(r.learners) },
+        { key: 'sessions', label: 'Phiên', render: r => fmtNum(r.sessions) },
+        { key: 'completions', label: 'Hoàn thành unit', render: r => fmtNum(r.completions) },
+        { key: 'flashAccuracy', label: 'Flashcard đúng', render: r => scoreCell(r.flashAccuracy) },
+        { key: 'pronAvg', label: 'Điểm phát âm', render: r => scoreCell(r.pronAvg) },
+      ],
+    });
+
+    const detail = el('div');
+    host.appendChild(detail);
+    this._lessons = { host: detail, data: d };
+    this.drawLessonTables();
+  },
+
+  /** Bấm một lộ trình → lọc hai bảng dưới theo lộ trình đó, không tải lại. */
+  loadLessonsKeep() {
+    this.drawLessonTables();
+    this._lessons.host.scrollIntoView({ behavior: 'smooth', block: 'start' });
+  },
+
+  drawLessonTables() {
+    const { host, data: d } = this._lessons;
+    host.innerHTML = '';
+    const pathSel = el('select', 'ainput');
+    pathSel.innerHTML = '<option value="">Mọi lộ trình</option>' +
+      d.paths.map(p => `<option value="${p.pathId}">${esc(shortPath(p.path))}</option>`).join('');
+    pathSel.value = this.pathFilter;
+    pathSel.onchange = () => { this.pathFilter = pathSel.value; this.drawLessonTables(); };
+    const only = el('label', 'kcheck');
+    only.innerHTML = `<input type="checkbox" ${this.activeOnly ? 'checked' : ''}> chỉ phần đã có người học`;
+    only.querySelector('input').onchange = e => { this.activeOnly = e.target.checked; this.drawLessonTables(); };
+    const bar = el('div', 'kcard__h kfilter');
+    bar.append(el('span', 'muted small', 'Lọc:'), pathSel, only);
+    host.appendChild(bar);
+
+    const inPath = r => !this.pathFilter || String(r.pathId) === this.pathFilter;
+    const topics = d.topics.filter(inPath).filter(r => !this.activeOnly || r.activeUnits);
+    const units = d.units.filter(inPath).filter(r => !this.activeOnly || r.learners || r.sessions);
+
+    h3(host, `Theo chủ đề · ${fmtNum(topics.length)}`);
+    Kit.table(host, {
+      rows: topics, pageSize: 10, csvName: 'chu-de', empty: 'Không có chủ đề nào khớp bộ lọc.',
+      columns: [
+        { key: 'topic', label: 'Chủ đề', render: r => { const n = el('div'); n.innerHTML = `<b>${esc(r.topic)}</b> <span class="muted small">${esc(shortPath(r.path))}</span>`; return n; }, value: r => r.topic },
+        { key: 'level', label: 'Cấp', render: r => Kit.badge(r.level || '—') },
+        { key: 'activeUnits', label: 'Unit có người học', render: r => `${fmtNum(r.activeUnits)} / ${fmtNum(r.units)}` },
+        { key: 'learners', label: 'Học sinh', render: r => fmtNum(r.learners) },
+        { key: 'sessions', label: 'Phiên', render: r => fmtNum(r.sessions) },
+        { key: 'completions', label: 'Hoàn thành unit', render: r => fmtNum(r.completions) },
+        { key: 'flashAccuracy', label: 'Flashcard đúng', render: r => scoreCell(r.flashAccuracy) },
+        { key: 'pronAvg', label: 'Điểm phát âm', render: r => scoreCell(r.pronAvg) },
+      ],
+    });
+
+    h3(host, `Theo unit · ${fmtNum(units.length)}`);
+    Kit.table(host, {
+      rows: units, pageSize: 15, csvName: 'unit', empty: 'Không có unit nào khớp bộ lọc.',
+      onRow: r => { location.hash = `#/stats/unit/${r.unitId}`; }, rowClass: () => 'clickable',
+      columns: [
+        { key: 'unit', label: 'Unit', value: r => r.unit,
+          render: r => { const n = el('div'); n.innerHTML = `<b>${esc(r.unit || '#' + r.unitId)}</b> <span class="muted small">${esc(r.topic || '')}</span>`; return n; } },
+        { key: 'learners', label: 'Bắt đầu', render: r => fmtNum(r.learners) },
+        { key: 'completed', label: 'Hoàn thành', render: r => fmtNum(r.completed) },
+        { key: 'avgScore', label: 'Điểm bài TB', render: r => scoreCell(r.avgScore) },
+        { key: 'sessions', label: 'Phiên', render: r => fmtNum(r.sessions) },
+        { key: 'flashAccuracy', label: 'Flashcard đúng', render: r => scoreCell(r.flashAccuracy, r.flashAnswered ? `${r.flashAnswered} thẻ` : '') },
+        { key: 'pronAvg', label: 'Điểm phát âm', render: r => scoreCell(r.pronAvg, r.words ? `${r.pronWords}/${r.words} từ` : '') },
+        { key: 'last', label: 'Lần cuối', render: r => Kit.date(r.last) },
+      ],
+    });
+    host.appendChild(el('div', 'muted small', 'Bấm một unit để xem từng nội dung, từng từ và tiến độ từng học sinh. Điểm phát âm là điểm chung của mọi người (vocabulary_global_stats) cho các từ thuộc unit.'));
+  },
+
+  renderUnit(main, uid) {
+    const bar = pageHead(main, 'Unit', '');
+    const back = el('button', 'ghost', '←  Bài học');
+    back.onclick = () => { this.tab = 'lessons'; location.hash = '#/stats'; };
+    bar.appendChild(back);
+    const host = el('div');
+    main.appendChild(host);
+    const load = async () => {
+      const d = await this.loading(host, () => api(`/api/admin/stats/lessons/units/${uid}`));
+      if (!d) return;
+      const u = d.unit;
+      main.querySelector('.apage__head h2').textContent = u.unit || `Unit #${uid}`;
+      const p = main.querySelector('.apage__head p') || el('p');
+      p.textContent = `${shortPath(u.path)} › ${u.topic || '—'} · unit #${uid}`;
+      if (!p.parentNode) main.querySelector('.apage__head h2').after(p);
+      this.drawUnit(host, d);
+    };
+    const reload = el('button', '', '↻  Tải lại');
+    reload.onclick = load;
+    bar.appendChild(reload);
+    load();
+  },
+
+  drawUnit(h, d) {
+    const u = d.unit;
+    Kit.kpis(h, [
+      { label: 'Học sinh bắt đầu', value: fmtNum(u.learners) },
+      { label: 'Hoàn thành', value: fmtNum(u.completed), sub: u.learners ? `${Math.round(u.completed * 100 / u.learners)}% số bắt đầu` : '' },
+      { label: 'Điểm bài TB', value: u.avgScore == null ? '—' : String(u.avgScore) },
+      { label: 'Phiên chơi', value: fmtNum(u.sessions), sub: `${fmtNum(u.players)} người` },
+      { label: 'Flashcard đúng', value: u.flashAccuracy == null ? '—' : `${u.flashAccuracy}%`, sub: `${fmtNum(u.flashAnswered)} thẻ` },
+      { label: 'Điểm phát âm TB', value: u.pronAvg == null ? '—' : String(u.pronAvg), sub: `${u.pronWords}/${u.words} từ đã được chấm` },
+    ]);
+
+    const g = el('div', 'kstats2');
+    const c1 = el('div', 'kcard');
+    c1.appendChild(el('h4', 'ksub', `Nội dung · ${d.contents.length}`));
+    Kit.table(c1, {
+      rows: d.contents, pageSize: 10, empty: 'Unit chưa có nội dung.',
+      columns: [
+        { key: 'order', label: '#', render: r => Kit.text(r.order) },
+        { key: 'label', label: 'Nội dung', render: r => { const n = el('div'); n.innerHTML = `${esc(r.label)}${r.required ? '' : ' <span class="muted small">không bắt buộc</span>'}`; return n; } },
+        { key: 'started', label: 'Bắt đầu', render: r => fmtNum(r.started) },
+        { key: 'completed', label: 'Xong', render: r => fmtNum(r.completed) },
+        { key: 'avgScore', label: 'Điểm TB', render: r => scoreCell(r.avgScore) },
+      ],
+    });
+    const c2 = el('div', 'kcard');
+    c2.appendChild(el('h4', 'ksub', `Học sinh · ${d.learners.length}`));
+    Kit.table(c2, {
+      rows: d.learners, pageSize: 10, empty: 'Chưa ai học unit này.',
+      onRow: r => { location.hash = `#/stats/learner/${r.profileId}`; }, rowClass: () => 'clickable',
+      columns: [
+        { key: 'name', label: 'Học sinh', value: r => r.name || `#${r.profileId}`,
+          render: r => { const row = el('div', 'kuser-row'); row.append(Kit.avatar(r.avatar, r.name, 24), el('span', null, r.name || `#${r.profileId}`)); return row; } },
+        { key: 'done', label: 'Tiến độ', value: r => (r.total ? r.done / r.total : 0),
+          render: r => scoreCell(r.total ? Math.round(r.done * 100 / r.total) : null, `${r.done}/${r.total}`) },
+        { key: 'avgScore', label: 'Điểm TB', render: r => Kit.text(r.avgScore) },
+        { key: 'last', label: 'Lần cuối', render: r => Kit.date(r.last) },
+      ],
+    });
+    g.append(c1, c2);
+    h.appendChild(g);
+
+    h3(h, `Từ trong unit · ${fmtNum(d.words.length)}`);
+    Kit.table(h, {
+      rows: d.words, pageSize: 15, csvName: `unit-${u.unitId}-tu`, empty: 'Unit chưa gắn từ vựng.',
+      columns: [
+        { key: 'word', label: 'Từ', value: r => r.word || `#${r.vocabularyId}`, render: r => r.word || `#${r.vocabularyId}` },
+        { key: 'level', label: 'Cấp', render: r => Kit.badge(r.level || '—') },
+        { key: 'pronAvg', label: 'Điểm phát âm (mọi người)', render: r => scoreCell(r.pronAvg, r.pronAttempts ? `${r.pronAttempts} lượt` : '') },
+        { key: 'accuracy', label: 'Flashcard đúng (trong unit)', render: r => scoreCell(r.accuracy, r.correct + r.wrong ? `${r.correct}/${r.correct + r.wrong}` : '') },
+      ],
+    });
+    h.appendChild(el('div', 'muted small', `Tổng hợp lúc ${Kit.dateTime(d.generatedAt)}. Từ khó nhất xếp lên đầu.`));
+  },
+
   // ── chi tiết một học sinh ─────────────────────────────────────────
   renderLearner(main, pid) {
     const bar = pageHead(main, 'Học sinh', '');
@@ -155,7 +309,10 @@ const LearningStats = {
     const load = async () => {
       const d = await this.loading(host, () => api(`/api/admin/stats/learners/${pid}?days=${this.days}`));
       if (!d) return;
-      main.querySelector('.apage__head h2').textContent = d.profile.name || `Profile #${pid}`;
+      const h2 = main.querySelector('.apage__head h2');
+      h2.textContent = d.profile.name || `Profile #${pid}`;
+      h2.classList.add('kuser-row');
+      h2.prepend(Kit.avatar(d.profile.avatar, d.profile.name, 36));
       const p = main.querySelector('.apage__head p') || el('p');
       p.textContent = `#${pid} · tạo ${Kit.date(d.profile.createdAt)} · số liệu ${d.days} ngày gần nhất`;
       if (!p.parentNode) main.querySelector('.apage__head h2').after(p);

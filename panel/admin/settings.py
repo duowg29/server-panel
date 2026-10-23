@@ -16,10 +16,17 @@ class AdminSettings:
     url: str = ""
     key: str = ""
     write_minutes: int = 15
+    avatar_bucket: str = "public-assets"
 
     @property
     def configured(self) -> bool:
         return bool(self.url and self.key)
+
+    @property
+    def avatar_base(self) -> str:
+        """profile.profileAvatarUrl lưu đường dẫn trong bucket công khai
+        (vd. avatars/<uid>/<file>.webp) — ghép thành URL xem được."""
+        return f"{self.url}/storage/v1/object/public/{self.avatar_bucket}/" if self.url else ""
 
     @property
     def host(self) -> str:
@@ -58,7 +65,7 @@ def load(path: Path | None = None) -> AdminSettings:
     if path is None and _cache and _cache[0] == mtime:
         return _cache[1]
     vals = _parse(p.read_text(encoding="utf-8")) if mtime >= 0 else {}
-    for k in ("SUPABASE_URL", "SUPABASE_SERVICE_ROLE_KEY", "ADMIN_WRITE_MINUTES"):
+    for k in ("SUPABASE_URL", "SUPABASE_SERVICE_ROLE_KEY", "ADMIN_WRITE_MINUTES", "ADMIN_AVATAR_BUCKET"):
         if os.environ.get(k):
             vals[k] = os.environ[k]
     try:
@@ -69,6 +76,7 @@ def load(path: Path | None = None) -> AdminSettings:
         url=(vals.get("SUPABASE_URL") or "").rstrip("/"),
         key=vals.get("SUPABASE_SERVICE_ROLE_KEY") or "",
         write_minutes=minutes,
+        avatar_bucket=(vals.get("ADMIN_AVATAR_BUCKET") or "public-assets").strip("/"),
     )
     if path is None:
         _cache = (mtime, s)

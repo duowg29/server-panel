@@ -10,6 +10,20 @@ const statusLabel = s => (USER_STATUS.find(x => x[0] === s) || [s, s || '—'])[
 const statusKind = s => ({ active: 'ok', inactive: '', banned: 'bad', suspended: 'warn', deleted: 'bad' }[s] || '');
 const isPremium = u => !!u.premiumUntil && new Date(u.premiumUntil) > new Date();
 
+/** id game → tên (nạp một lần). */
+let _gameTitles = null;
+async function gameTitles() {
+  if (!_gameTitles) {
+    _gameTitles = api('/api/admin/tables/game/rows?limit=500')
+      .then(d => Object.fromEntries((d.rows || []).map(g => [g.id, g.title || g.codename || `#${g.id}`])))
+      .catch(() => { _gameTitles = null; return {}; });
+  }
+  return _gameTitles;
+}
+
+/** Hàm analytics có bản trả tỉ lệ 0..1, có bản trả sẵn phần trăm. */
+const stickiness = r => { const v = Number(r) || 0; return (v > 1 ? v : v * 100).toFixed(0); };
+
 const Users = {
   rows: [],
   analytics: null,
@@ -68,6 +82,8 @@ const Users = {
     const rows = this.rows;
     const list = this.filtered();
     const an = this.analytics || {};
+    const DAY = 86400000;
+    const signed7 = rows.filter(u => u.lastSignInAt && Date.now() - new Date(u.lastSignInAt) < 7 * DAY).length;
     const avg = (arr, k) => arr.length ? Math.round(arr.reduce((s, u) => s + (Number(u[k]) || 0), 0) / arr.length) : 0;
     Kit.kpis(h, [
       { label: 'Tài khoản', value: fmtNum(rows.length), sub: `${fmtNum(list.length)} khớp bộ lọc` },
@@ -75,9 +91,11 @@ const Users = {
       { label: 'Premium', value: fmtNum(rows.filter(isPremium).length) },
       { label: 'EXP trung bình (lọc)', value: fmtNum(avg(list, 'expPoint')) },
       { label: 'Streak trung bình', value: fmtNum(avg(list, 'streakDays')) },
-      { label: 'DAU / WAU / MAU', value: `${fmtNum(an.dau)} / ${fmtNum(an.wau)} / ${fmtNum(an.mau)}`, sub: `stickiness ${((an.dauMauRatio || 0) * 100).toFixed(0)}%` },
+      { label: 'DAU / WAU / MAU', value: `${fmtNum(an.dau)} / ${fmtNum(an.wau)} / ${fmtNum(an.mau)}`, sub: `stickiness ${stickiness(an.dauMauRatio)}%` },
       { label: 'Mới hôm nay', value: fmtNum(an.newUsers) },
       { label: 'Retention D1 / D7 / D30', value: `${an.retentionD1 ?? 0}/${an.retentionD7 ?? 0}/${an.retentionD30 ?? 0}%` },
+      { label: 'Đăng nhập trong 7 ngày', value: fmtNum(signed7), sub: rows.length ? `${Math.round(signed7 * 100 / rows.length)}% tài khoản` : '' },
+      { label: 'Chưa xác minh email / SĐT', value: fmtNum(rows.filter(u => !u.emailVerified && !u.phoneVerified).length) },
     ]);
 
     const dist = el('div', 'kgrid3');
@@ -92,6 +110,23 @@ const Users = {
     }
     Kit.bars(dist, 'Tài khoản tạo mới (6 tháng)', months);
     h.appendChild(dist);
+
+    // lần đăng nhập gần nhất theo ngày (14 ngày) — như trang cũ
+    const days = [];
+    for (let i = 13; i >= 0; i--) {
+      const d = new Date(Date.now() - i * DAY);
+      const key = d.toLocaleDateString('sv-SE');
+      days.push({ key, label: `${String(d.getDate()).padStart(2, '0')}/${String(d.getMonth() + 1).padStart(2, '0')}`, value: 0 });
+    }
+    for (const u of rows) {
+      if (!u.lastSignInAt) continue;
+      const d = days.find(x => x.key === new Date(u.lastSignInAt).toLocaleDateString('sv-SE'));
+      if (d) d.value += 1;
+    }
+    const sc = el('div', 'kcard kcard--chart');
+    sc.appendChild(el('h4', 'ksub', 'Lần đăng nhập gần nhất rơi vào ngày nào (14 ngày)'));
+    columnChart(sc, days.map(d => ({ label: d.label, value: d.value, sub: 'tài khoản' })));
+    h.appendChild(sc);
 
     // bộ lọc
     const f = this.filters;
@@ -128,9 +163,11 @@ const Users = {
       columns: [
         { key: 'profileId', label: 'ID', value: u => Number(u.profileId) },
         { key: 'fullname', label: 'Người dùng', value: u => u.fullname || u.displayTitle || u.email, render: u => {
+          const row = el('div', 'kuser-row');
           const d = el('div', 'kuser');
           d.innerHTML = `<b>${esc(u.fullname || u.displayTitle || '(chưa đặt tên)')}</b><span class="muted">${esc(u.email || u.phone || u.userId || '')}</span>`;
-          return d;
+          row.append(Kit.avatar(u.avatarUrl, u.fullname || u.displayTitle || u.email, 34), d);
+          return row;
         } },
         { key: 'role', label: 'Vai trò', render: u => Kit.badge(u.role || '—', u.role === 'admin' ? 'warn' : '') },
         { key: 'status', label: 'Trạng thái', render: u => Kit.badge(statusLabel(u.status), statusKind(u.status)) },
@@ -227,6 +264,14 @@ const Users = {
     const pid = Number(u.profileId);
     const body = el('div', 'kdetail');
     const m = modal({ title: `Chi tiết tài khoản #${pid} — ${u.email || u.fullname || ''}`, body, wide: '72rem' });
+    const head = el('div', 'kdetail__head');
+    const who = el('div', 'kuser grow');
+    who.innerHTML = `<b>${esc(u.fullname || u.displayTitle || '(chưa đặt tên)')}</b><span class="muted">${esc(u.email || u.phone || '')} · ${esc(statusLabel(u.status))}</span>`;
+    const stats = el('button', '', '📈  Số liệu học tập');
+    stats.title = 'Phiên chơi, từng từ đã luyện, thời gian học của người này';
+    stats.onclick = () => { m.close(); location.hash = `#/stats/learner/${pid}`; };
+    head.append(Kit.avatar(u.avatarUrl, u.fullname || u.email, 56), who, stats);
+    body.appendChild(head);
     const ledger = (title, rows, cols) => {
       const box = el('div');
       box.appendChild(el('h4', 'ksub', title));
@@ -260,8 +305,34 @@ const Users = {
           { label: 'Xu hiện tại', value: fmtNum(p.coinBalance) }, { label: 'EXP', value: fmtNum(p.expPoint) },
           { label: 'Streak ngày', value: fmtNum(p.streakDays) }, { label: 'Từ vựng thành thạo', value: fmtNum(p.fluentWordCount) },
           { label: 'Bài đã học', value: fmtNum(p.lessonLearned) },
-          { label: 'Tổng thu / chi (100 dòng gần nhất)', value: `+${fmtNum(sum.in)} / ${fmtNum(sum.out)}` },
+          { label: 'Thu (100 dòng gần nhất)', value: `+${fmtNum(sum.in)}`, sub: `chi ${fmtNum(sum.out)}` },
         ]);
+        // số dư thật theo thời gian: đi ngược từ số dư hiện tại qua từng dòng sổ
+        const ord = (coins || []).filter(r => r.createdAt).sort((a, c) => new Date(a.createdAt) - new Date(c.createdAt));
+        if (ord.length) {
+          let bal = Number(p.coinBalance) || 0;
+          const pts = [];
+          for (let i = ord.length - 1; i >= 0; i--) {
+            pts.unshift({ label: Kit.dm(ord[i].createdAt), value: bal });
+            bal -= Number(ord[i].delta) || 0;
+          }
+          const byDay = new Map();
+          for (const r of ord) {
+            const k = Kit.dm(r.createdAt);
+            const v = byDay.get(k) || { in: 0, out: 0 };
+            const d = Number(r.delta) || 0;
+            if (d > 0) v.in += d; else v.out -= d;
+            byDay.set(k, v);
+          }
+          const g = el('div', 'kstats2');
+          const c1 = el('div', 'kcard');
+          c1.appendChild(el('h4', 'ksub', 'Số dư xu theo thời gian'));
+          lineChart(c1, pts, { unit: ' xu' });
+          const c2 = el('div');
+          Kit.bars(c2, 'Xu nhận (+) / tiêu (−) theo ngày', [...byDay.entries()].slice(-12).flatMap(([k, v]) => [[`${k} +`, v.in], [`${k} −`, v.out]]).filter(e => e[1]));
+          g.append(c1, c2);
+          b.appendChild(g);
+        }
         b.appendChild(ledger('Sổ xu (profile_coin_ledger)', coins || [], [
           dt, { key: 'delta', label: 'Thay đổi', render: r => (r.delta > 0 ? '+' : '') + fmtNum(r.delta) }, { key: 'reason', label: 'Lý do' },
         ]));
@@ -285,10 +356,26 @@ const Users = {
         ]));
       } },
       { id: 'games', label: 'Lịch sử game', render: async (b) => {
-        const rows = await rpc('tt_admin_game_sessions_get', { p_profile_id: pid, p_limit: 100 });
+        const [rows, titles] = await Promise.all([
+          rpc('tt_admin_game_sessions_get', { p_profile_id: pid, p_limit: 100 }),
+          gameTitles(),
+        ]);
+        const gname = r => titles[r.gameId] || `#${r.gameId}`;
+        const scored = (rows || []).filter(r => typeof r.score === 'number')
+          .sort((a, c) => new Date(a.startedAt || a.createdAt) - new Date(c.startedAt || c.createdAt));
+        if (scored.length) {
+          const c = el('div', 'kcard');
+          c.appendChild(el('h4', 'ksub', `Điểm từng phiên (${scored.length} phiên có điểm, cũ → mới)`));
+          columnChart(c, scored.map(r => ({
+            label: Kit.dm(r.startedAt || r.createdAt),
+            value: r.score, sub: gname(r),
+          })));
+          b.appendChild(c);
+        }
         b.appendChild(ledger('Phiên chơi (game_session)', rows || [], [
           { key: 'startedAt', label: 'Bắt đầu', render: r => Kit.dateTime(r.startedAt || r.createdAt) },
-          { key: 'gameId', label: 'Game' }, { key: 'score', label: 'Điểm' }, { key: 'resultStatus', label: 'Kết quả' },
+          { key: 'gameId', label: 'Game', value: gname, render: gname }, { key: 'score', label: 'Điểm' },
+          { key: 'resultStatus', label: 'Kết quả', render: r => Kit.badge(r.resultStatus || '—', r.resultStatus === 'completed' ? 'ok' : '') },
           { key: 'endedAt', label: 'Kết thúc', render: r => Kit.dateTime(r.endedAt) },
           { key: 'metadata', label: 'Metadata', render: r => { const s = Kit.json(r.metadata); return s.length > 60 ? s.slice(0, 60) + '…' : s; } },
         ]));

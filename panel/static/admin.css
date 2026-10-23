@@ -474,7 +474,7 @@ body.admin h3.kh3:first-child { margin-top: 0; }
 .kcard__h { display: flex; align-items: center; gap: .5rem; flex-wrap: wrap; margin-bottom: .2rem; }
 .kcard__h h4.ksub { margin: 0 auto 0 0; }
 .kcard .dgrid-wrap { border: none; }
-.kcol svg { width: 100%; height: 190px; display: block; }
+.kcol svg { width: 100%; height: 170px; display: block; }
 .kcol .grid { stroke: var(--line); stroke-width: 1; vector-effect: non-scaling-stroke; }
 .kcol .bar { fill: var(--cyan); filter: drop-shadow(0 0 3px rgba(34, 211, 238, .45)); opacity: .9; }
 .kcol .bar:hover { fill: #7ff0ff; }
@@ -491,3 +491,24 @@ body.admin .kstats2 .kbars { border-radius: 12px; }
 .dgrid tr.clickable { cursor: pointer; }
 .dgrid tr.clickable:hover td { background: var(--bg-raise); }
 .kscore .muted.small { white-space: nowrap; }
+.kfilter { margin: 1.2rem 0 -.2rem; gap: .6rem; }
+.kcheck { display: inline-flex; align-items: center; gap: .35rem; font-size: 13px; color: var(--fg-dim); cursor: pointer; }
+.kstats-note { margin: -.2rem 0 .6rem; }
+.kcol__x { position: relative; height: 1.3rem; margin-top: .25rem; }
+.kcol__x span { position: absolute; transform: translateX(-50%); white-space: nowrap; font-size: 11px; color: var(--fg-dim); font-family: var(--font-num); }
+.kcol__x span:first-child { transform: none; }
+.kcol__x span:last-child { transform: translateX(-100%); }
+.kcol .line { stroke: var(--cyan); stroke-width: 2; vector-effect: non-scaling-stroke; }
+.kcol .area { fill: var(--cyan-dim); stroke: none; }
+.kcol .zero { stroke: var(--fg-dim); stroke-dasharray: 4 3; vector-effect: non-scaling-stroke; }
+.kcol .dot { stroke: var(--cyan); stroke-width: 6; stroke-linecap: round; vector-effect: non-scaling-stroke; }
+.kcol .dot:hover { stroke: #7ff0ff; stroke-width: 9; }
+/* ảnh đại diện */
+.kavatar { display: inline-flex; flex: none; align-items: center; justify-content: center; border-radius: 50%; overflow: hidden;
+  background: var(--bg-raise); border: 1px solid var(--line); color: var(--cyan); font-weight: 700; }
+.kavatar img { width: 100%; height: 100%; object-fit: cover; display: block; }
+.kuser-row { display: flex; align-items: center; gap: .6rem; }
+.kdetail__head { display: flex; align-items: center; gap: .8rem; margin-bottom: .8rem; }
+.kdetail__head b { font-size: 16px; color: var(--fg-bright); }
+.kdetail__head .grow { flex: 1; }
+.kcard--chart { margin-bottom: 1rem; }

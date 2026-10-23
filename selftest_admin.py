@@ -361,6 +361,28 @@ async def main() -> int:
     check(a9["playMinutes"] == 0 and a9["talks"] == 1 and a9["talkMinutes"] == 2, "Free Talk tính riêng")
     check(a7["topGames"][0]["count"] == 1 and a7["lastActive"].startswith("2026-10-03T16:30"), "game chơi nhiều + lần cuối")
 
+    print("== số liệu theo bài học")
+    ld = {
+        "contents": [{"id": 10, "unitId": 1, "isRequired": True}, {"id": 11, "unitId": 1, "isRequired": True},
+                     {"id": 12, "unitId": 1, "isRequired": False}],
+        "progress": [
+            {"profileId": 7, "unitContentId": 10, "status": "completed", "score": 80},
+            {"profileId": 7, "unitContentId": 11, "status": "completed", "score": 100},
+            {"profileId": 9, "unitContentId": 10, "status": "completed", "score": 60},
+            {"profileId": 9, "unitContentId": 12, "status": "completed", "score": None},
+            {"profileId": 5, "unitContentId": 11, "status": "in_progress", "score": None},
+        ],
+        "sessions": [{"profileId": 7, "u": "1", "cv": [100, 101], "wv": [102]}, {"profileId": 7, "u": None, "cv": [1]}],
+        "vmap": [{"vocabularyId": 100, "unitId": 1}, {"vocabularyId": 101, "unitId": 1}, {"vocabularyId": 102, "unitId": 1}],
+        "wstats": [{"vocabularyId": 100, "attempts": 3, "avgScore100": 90}, {"vocabularyId": 101, "attempts": 1, "avgScore100": 50},
+                   {"vocabularyId": 102, "attempts": 0, "avgScore100": None}],
+    }
+    u1 = stats._unit_row({"id": 1, "unitName": "U"}, {"id": 2}, {"id": 3}, stats._lesson_rollup(ld))
+    check(u1["learners"] == 3 and u1["completed"] == 1, "hoàn thành = xong mọi nội dung bắt buộc (không tính tuỳ chọn)")
+    check(u1["avgScore"] == 80 and u1["contents"] == 2, "điểm bài TB bỏ lượt không có điểm")
+    check(u1["sessions"] == 1 and u1["flashAccuracy"] == 67, "phiên + flashcard theo unitId (id dạng chuỗi vẫn khớp)")
+    check(u1["pronAvg"] == 80 and u1["pronWords"] == 2 and u1["words"] == 3, "điểm phát âm unit có trọng số theo lượt")
+
     print("== nhật ký")
     log = (await c.get("/api/admin/audit")).json()
     kinds = [x["kind"] for x in log]

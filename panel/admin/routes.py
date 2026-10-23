@@ -117,6 +117,7 @@ async def status() -> dict[str, Any]:
         "project": s.project_ref,
         "write": GUARD.state(),
         "write_minutes": s.write_minutes,
+        "avatar_base": s.avatar_base,
         "env_file": str(settingsmod.ENV_FILE),
     }
     if not s.configured:
