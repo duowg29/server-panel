@@ -19,6 +19,7 @@ defaults:
 groups:
   - { id: composite, label: ONE_CLICK }
   - { id: hybrid, label: HYBRID_STACK }
+  - { id: tinybot, label: TINYBOT }
   # Ẩn: đụng port 8001/8002/8088 với hybrid nên không chạy song song được.
   # Vẫn khai báo để conflicts_with của nhóm hybrid còn trỏ tới. Bỏ hidden là hiện lại.
   - { id: vllm, label: VLLM_STACK, hidden: true }
@@ -33,7 +34,7 @@ services:
     emphasis: primary
     note: Speech + OTG + gateway + ngrok. Một nút chạy hết.
     members: [speech, cpu_inf, gpu_chat, intent, gateway, ngrok]
-    conflicts_with: [vllm_embed, vllm_chat, asr]
+    conflicts_with: [vllm_embed, vllm_chat]
     start:
       # panel tự khởi động lần lượt từng member, chờ health từng cái.
       # KHÔNG dùng start_hybrid_with_ngrok.sh: script đó bỏ qua service đang
@@ -57,7 +58,7 @@ services:
     kind: composite
     note: 4 service host, không mở tunnel.
     members: [speech, cpu_inf, gpu_chat, intent, gateway]
-    conflicts_with: [vllm_embed, vllm_chat, asr]
+    conflicts_with: [vllm_embed, vllm_chat]
     start:
       mode: members
       job_log: "{log_dir}/_job_hybrid.log"
@@ -192,6 +193,8 @@ services:
     warn_on_start: >-
       Nạp Qwen3-8B 4-bit (~5.5 GB VRAM) cạnh TinySpeech (~7 GB) trên card 16 GB.
       Còn dư ~3 GB. Chạy được, nhưng đừng bật thêm thứ gì nặng lên GPU nữa.
+      Nếu Parakeet ASR (~1.5 GB) cũng đang chạy thì chỉ còn ~1 GB — tắt một
+      trong hai trước.
     note: Qwen3-8B 4-bit trên GPU — thay cho Qwen3-1.7B Q4 chạy CPU ở :8001
     # 6 GB checkpoint đọc từ đĩa rồi đẩy lên GPU. Lần đầu (page cache còn nguội)
     # lâu hơn hẳn các lần sau; 180s mặc định là quá sát.
@@ -471,12 +474,23 @@ services:
 
   - id: asr
     name: Parakeet ASR
-    group: vllm
+    # Chuyển từ nhóm vllm (ẩn) sang nhóm tinybot 29/10/2026. Lý do: OTG không
+    # còn dùng Parakeet (docs/pipeline.md), nhưng TinyBot thì có — và vì card
+    # này bị ẩn, panel chặn Start hybrid với "đang chạy stack xung đột: asr"
+    # mà người dùng KHÔNG thấy cái nào để tắt. Hiện card ra là hết mù.
+    group: tinybot
     kind: process
+    note: >-
+      Lane STT phụ của TinyBot (~130ms). Lane chính là TinySpeech :8000 — đã
+      nạp sẵn cho chấm phát âm nên không tốn thêm VRAM. Chỉ bật cái này khi
+      TinySpeech tắt.
     port: 8003
     log: "{log_dir}/asr.log"
     pid_file: "{log_dir}/asr.pid"
-    conflicts_with: [speech]
+    # Bo conflicts_with: [speech] 29/10/2026 — do that tren RTX 4060 Ti 16 GB:
+    # Whisper 7606 MiB + Parakeet 1538 MiB = 9144 MiB, con du 6078 MiB. Hai cai
+    # chay song song duoc. Conflict cu la tu thoi Whisper con an 11-12 GB.
+    # LUU Y: cong thêm gpu_chat (~5.5 GB) thi con ~1 GB — dung bat ca ba.
     start:
       mode: process
       cwd: "{root}"
@@ -532,3 +546,48 @@ services:
       detail:
         - "profile={json.inference_profile}"
         - "intents={json.cache.enabled_intent_count}"
+
+  # ══ TINYBOT ═════════════════════════════════════════════════════════
+  # Repo khác (tinytalk-embedded) nên không dùng {root} được — phải ghi
+  # đường dẫn đầy đủ. Không đụng port nào của hybrid: 8010 + 8888.
+  - id: tinybot
+    name: TinyBot Game Server
+    group: tinybot
+    kind: process
+    port: 8010
+    log: "{log_dir}/tinybot.log"
+    pid_file: "{log_dir}/tinybot.pid"
+    note: >-
+      WebSocket :8888 cho thiết bị + HTTP :8010 cho app/OTA. STT dùng ASR trên
+      máy, TTS dùng Edge TTS — không cần khoá OpenAI.
+    start:
+      mode: process
+      cwd: /home/nguyenhaiduong/Duong/Dev/tinytalk-embedded/node-server-mock
+      argv:
+        - /home/nguyenhaiduong/.nvm/versions/node/v24.19.0/bin/node
+        - /home/nguyenhaiduong/Duong/Dev/tinytalk-embedded/node-server-mock/server.js
+      env:
+        HTTP_PORT: "8010"
+        WS_PORT: "8888"
+        # local = ASR trên máy này. Thử :8003 (Parakeet) rồi mới tới :8000
+        # (TinySpeech) — tắt một lane không làm chết bot. Thứ tự này đo ra:
+        # Parakeet nhanh hơn ~2.5x và không bịa chữ trên đoạn im lặng.
+        STT_BACKEND: local
+        ASR_SERVICE_URLS: http://127.0.0.1:8003,http://127.0.0.1:8000
+        # edge = Edge TTS miễn phí, cùng giọng với 628 file cache.
+        TTS_BACKEND: edge
+      requires_file: /home/nguyenhaiduong/Duong/Dev/tinytalk-embedded/node-server-mock/server.js
+    stop:
+      mode: pkill
+      pattern: node-server-mock/server.js
+      grace_s: 5
+    health:
+      url: http://127.0.0.1:8010/health
+      rules:
+        online: json.status == 'ok'
+      detail:
+        - "stt={json.stt}"
+        - "tts={json.tts}"
+        - "devices={json.devices}"
+    actions:
+      - { id: devices, label: Thiết bị đang nối, type: url, url: "http://127.0.0.1:8010/devices" }
