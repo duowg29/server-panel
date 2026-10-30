@@ -569,11 +569,16 @@ services:
       env:
         HTTP_PORT: "8010"
         WS_PORT: "8888"
-        # local = ASR trên máy này. Thử :8003 (Parakeet) rồi mới tới :8000
-        # (TinySpeech) — tắt một lane không làm chết bot. Thứ tự này đo ra:
-        # Parakeet nhanh hơn ~2.5x và không bịa chữ trên đoạn im lặng.
+        # local = ASR trên máy này. Thử :8000 (TinySpeech) rồi mới tới :8003
+        # (Parakeet) — tắt một lane không làm chết bot.
+        #
+        # Thứ tự ĐẢO lại 30/10/2026 sau khi đo 520 lượt có nhãn: TinySpeech
+        # chính xác 98-99% so với Parakeet 92-97%, và trên 20 clip chỉ có nhiễu
+        # nền thì Parakeet bịa ra chữ 6/20 (4 lần ra "Yeah." — bị tính thành
+        # câu trả lời YES), TinySpeech 0/20. Parakeet nhanh hơn nhưng giữ làm
+        # lane dự.
         STT_BACKEND: local
-        ASR_SERVICE_URLS: http://127.0.0.1:8003,http://127.0.0.1:8000
+        ASR_SERVICE_URLS: http://127.0.0.1:8000,http://127.0.0.1:8003
         # edge = Edge TTS miễn phí, cùng giọng với 628 file cache.
         TTS_BACKEND: edge
       requires_file: /home/nguyenhaiduong/Duong/Dev/tinytalk-embedded/node-server-mock/server.js
