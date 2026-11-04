@@ -559,7 +559,9 @@ services:
     pid_file: "{log_dir}/tinybot.pid"
     note: >-
       WebSocket :8888 cho thiết bị + HTTP :8010 cho app/OTA. STT dùng ASR trên
-      máy, TTS dùng Edge TTS — không cần khoá OpenAI.
+      máy, TTS dùng Edge TTS — không cần khoá OpenAI. OTA chỉ đi qua Supabase
+      Edge Function, nên muốn cập nhật firmware thì phải bật cả gateway :8090
+      và ngrok (nhóm Hybrid) để Supabase gọi vào được.
     start:
       mode: process
       cwd: /home/nguyenhaiduong/Duong/Dev/tinytalk-embedded/node-server-mock
@@ -593,6 +595,7 @@ services:
       detail:
         - "stt={json.stt}"
         - "tts={json.tts}"
-        - "devices={json.devices}"
+        - "bot={json.botFirmware}"
     actions:
       - { id: devices, label: Thiết bị đang nối, type: url, url: "http://127.0.0.1:8010/devices" }
+      - { id: manifest, label: Manifest firmware đã ký, type: url, url: "http://127.0.0.1:8010/api/tinybot/firmware/latest?channel=stable" }
