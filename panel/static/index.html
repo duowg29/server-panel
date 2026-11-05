@@ -46,7 +46,14 @@
 
   </div>
 
-  <aside class="col-right">
+  <aside class="col-right" id="logdock">
+    <!-- Màn hẹp (<960px): log là ngăn kéo ghim đáy màn; thanh này thu / mở. -->
+    <button class="logdock__bar" id="logdock-bar" type="button" aria-expanded="false">
+      <span class="logdock__title">▤ LOG</span>
+      <span class="logdock__count" id="logdock-count">chưa mở log nào</span>
+      <span class="grow"></span>
+      <span class="logdock__arrow" id="logdock-arrow">▴ mở</span>
+    </button>
     <div class="logstack" id="logstack">
       <div class="logempty" id="logempty">
         <div style="font-size:2rem;opacity:.5">▤</div>

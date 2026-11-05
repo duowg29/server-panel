@@ -584,6 +584,34 @@ async function deleteService(svc) {
   } catch (e) { toast(e.message, 'err'); }
 }
 
+// ── Ngăn kéo log (màn hẹp < 960px) ──────────────────────────────────
+// Rộng hơn thì cột log ghim bên phải, thanh này ẩn và lớp dock-open không
+// đổi gì.
+const Dock = {
+  set(open) {
+    document.body.classList.toggle('dock-open', open);
+    const bar = $('#logdock-bar');
+    if (bar) bar.setAttribute('aria-expanded', String(open));
+    const arrow = $('#logdock-arrow');
+    if (arrow) arrow.textContent = open ? '▾ thu gọn' : '▴ mở';
+    this.count();
+  },
+  count() {
+    const n = Logs.panes.size;
+    const c = $('#logdock-count');
+    if (c) {
+      c.textContent = n
+        ? n + ' log đang mở · ' + [...Logs.panes.keys()].join(', ')
+        : 'chưa mở log nào — bấm ▤ Log trên card';
+    }
+  },
+};
+document.addEventListener('DOMContentLoaded', () => {
+  const bar = $('#logdock-bar');
+  if (bar) bar.onclick = () => Dock.set(!document.body.classList.contains('dock-open'));
+  Dock.count();
+});
+
 // ── Log pane ────────────────────────────────────────────────────────
 const Logs = {
   panes: new Map(),
@@ -602,6 +630,8 @@ const Logs = {
       this.panes.get(first).root.classList.add('collapsed');
     }
     $('#logempty').style.display = 'none';
+    // Màn hẹp: mở log là bung ngăn kéo ở đáy màn.
+    Dock.set(true);
 
     const root = el('div', 'logpane');
 
@@ -640,6 +670,7 @@ const Logs = {
       pending: [], raf: 0, unseen: 0, ws: null, chip: null,
     };
     this.panes.set(id, pane);
+    Dock.count();
 
     bClose.onclick = () => this.close(id);
     bPop.onclick = () => window.open('/popout?log=' + encodeURIComponent(id),
@@ -795,6 +826,7 @@ const Logs = {
     p.root.remove();
     this.panes.delete(id);
     if (!this.panes.size) $('#logempty').style.display = '';
+    Dock.count();
     syncAll();
   },
 

@@ -155,9 +155,78 @@ a:hover { text-decoration: underline; }
   flex-direction: column;
   min-width: 0;
 }
-@media (max-width: 1280px) {
-  .shell { grid-template-columns: 1fr; }
-  .col-right { position: static; height: 38rem; }
+/* Thanh thu / mở ngăn log — chỉ hiện ở màn hẹp. */
+.logdock__bar { display: none; }
+
+/* Màn vừa: vẫn hai cột, cột log hẹp lại và vẫn bám màn hình (trước đây dưới
+   1280px log rơi xuống cuối trang — sau mọi card + biểu đồ, không thấy đâu). */
+@media (max-width: 1279px) {
+  .shell { grid-template-columns: minmax(0, 1fr) minmax(20rem, 40%); gap: .8rem; padding: .8rem; }
+  .col-right { top: .8rem; height: calc(100vh - 1.6rem); }
+  .cards { grid-template-columns: repeat(auto-fill, minmax(19rem, 1fr)); }
+}
+
+/* Màn hẹp: log thành ngăn kéo ghim đáy màn, luôn thấy; bấm thanh để thu /
+   mở, mở một log là ngăn tự bung lên. */
+@media (max-width: 959px) {
+  .shell { grid-template-columns: 1fr; padding-bottom: 4rem; }
+  .col-right {
+    position: fixed;
+    left: 0;
+    right: 0;
+    bottom: 0;
+    top: auto;
+    height: auto;
+    z-index: 900;
+    background: var(--bg);
+    border-top: 1px solid var(--line-hot);
+    box-shadow: 0 -10px 30px rgba(0, 0, 0, .55);
+    padding: 0 .6rem .6rem;
+    box-sizing: border-box;
+  }
+  body.dock-open .col-right { height: min(58vh, 36rem); }
+  body.dock-open .shell { padding-bottom: calc(min(58vh, 36rem) + 1rem); }
+  body:not(.dock-open) .logstack { display: none; }
+  .logdock__bar {
+    box-sizing: border-box;
+    display: flex;
+    align-items: center;
+    gap: .6rem;
+    width: 100%;
+    min-height: 2.6rem;
+    margin: 0 0 .5rem;
+    padding: .4rem .2rem;
+    border: 0;
+    border-radius: 0;
+    background: transparent;
+    color: var(--fg);
+    font-family: var(--font-mono);
+    font-size: 12.5px;
+    cursor: pointer;
+    text-align: left;
+  }
+  body:not(.dock-open) .logdock__bar { margin: 0; }
+  .logdock__title { color: var(--cyan); font-weight: 700; letter-spacing: .14em; }
+  .logdock__count {
+    color: var(--fg-dim);
+    min-width: 0;
+    overflow: hidden;
+    text-overflow: ellipsis;
+    white-space: nowrap;
+  }
+  .logdock__arrow { flex: none; }
+  .logdock__bar .grow { flex: 1; }
+  .logdock__arrow { color: var(--cyan); font-weight: 700; }
+  #toasts { bottom: 3.6rem; }
+  body.dock-open #toasts { bottom: calc(min(58vh, 36rem) + .6rem); }
+}
+
+@media (max-width: 560px) {
+  .masthead .tag { display: none; }
+  .masthead .actions { margin-left: 0; width: 100%; }
+  .masthead .actions #svc-filter { flex: 1 1 100%; }
+  .cards { grid-template-columns: 1fr; }
+  .logpane__bar button { padding: .2rem .45rem; }
 }
 
 /* ── Tiêu đề khu vực ─────────────────────────────────────────────── */
