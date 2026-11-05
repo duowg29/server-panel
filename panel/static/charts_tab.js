@@ -638,19 +638,26 @@ const LoadTest = {
 
 /* Biểu đồ nằm thẳng trong trang chính, dưới các card — nên phần lớn thời gian
    nó ở NGOÀI màn hình trong khi vẫn fetch và vẽ đều đặn. visibilitychange chỉ
-   bắt được trường hợp ẩn cả cửa sổ, không bắt được "đã cuộn qua". */
+   bắt được trường hợp ẩn cả cửa sổ, không bắt được "đã cuộn qua".
+   Hàng ô KPI ở ĐẦU trang cũng do nhịp này cập nhật — trước đây chỉ canh khu
+   biểu đồ (dưới mọi card) nên đứng ở đầu trang thì ô đứng hình ở số cũ. */
 function watchCharts() {
-  const root = document.getElementById('charts-body');
-  if (!root || typeof IntersectionObserver === 'undefined') {
+  const targets = ['kpi-row', 'charts-body']
+    .map(id => document.getElementById(id)).filter(Boolean);
+  if (!targets.length || typeof IntersectionObserver === 'undefined') {
     ChartsTab.inView = true;
     ChartsTab.sync();
     return;
   }
-  new IntersectionObserver(entries => {
-    ChartsTab.inView = entries.some(e => e.isIntersecting);
+  // entries chỉ gồm phần tử VỪA đổi trạng thái — phải nhớ cái nào đang thấy
+  const seen = new Set();
+  const io = new IntersectionObserver(entries => {
+    for (const e of entries) e.isIntersecting ? seen.add(e.target) : seen.delete(e.target);
+    ChartsTab.inView = seen.size > 0;
     ChartsTab.sync();
     // rootMargin: bắt đầu vẽ trước khi tới nơi, để cuộn tới đã có sẵn dữ liệu
-  }, { rootMargin: '200px' }).observe(root);
+  }, { rootMargin: '200px' });
+  targets.forEach(t => io.observe(t));
 }
 
 // ── Tự khởi động ────────────────────────────────────────────────────
